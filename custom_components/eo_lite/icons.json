@@ -1,0 +1,8 @@
+{
+  "entity": {
+    "switch": {
+      "allow_charging": { "default": "mdi:power-plug-battery" },
+      "only_during_timers": { "default": "mdi:timer-outline" }
+    }
+  }
+}

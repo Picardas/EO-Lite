@@ -1,0 +1,5 @@
+# The Charger dashboard. EO-Lite adds it to the sidebar by itself. To add it
+# by hand instead, make a dashboard and paste this into its raw configuration
+# editor.
+strategy:
+  type: custom:eo-lite

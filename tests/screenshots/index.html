@@ -1,0 +1,228 @@
+<!doctype html>
+<!--
+  Screenshots for the README: the dashboard script with a mock hass, real
+  Material Design icons (from jsDelivr) and Home Assistant's card look.
+  ?scene=timers|charging|off|full says what the charger's doing, &folded=a,b
+  folds blocks (now, when, power, timer_1, …), &phone lays it out at a
+  phone's width and &dark uses the dark theme. AGENTS.md says how to take them.
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>EO-Lite screenshots</title>
+  <style>
+    html, body { margin: 0; }
+    body { font-family: Roboto, "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased;
+           background: var(--primary-background-color);
+           --primary-background-color: #fafafa; --card-background-color: #fff; --divider-color: #e0e0e0;
+           --primary-text-color: #212121; --secondary-text-color: #727272; --rgb-primary-text-color: 33, 33, 33;
+           --primary-color: #03a9f4; --rgb-primary-color: 3, 169, 244; --state-inactive-color: #757575; }
+    body.dark { --primary-background-color: #111111; --card-background-color: #1c1c1c; --divider-color: rgba(225, 225, 225, 0.12);
+                --primary-text-color: #e1e1e1; --secondary-text-color: #9b9b9b; --rgb-primary-text-color: 225, 225, 225;
+                --state-inactive-color: #8a8a8a; }
+    header { height: 56px; display: flex; align-items: center; gap: 12px; padding: 0 16px; font-size: 20px; font-weight: 400;
+             color: var(--primary-text-color); }
+    header .menu { --mdc-icon-size: 24px; color: var(--secondary-text-color); }
+    main { padding: 8px 16px 24px; }
+    .sections { max-width: 1500px; margin: 0 auto; }
+  </style>
+  <script>
+    window.errors = [];
+    addEventListener("error", (e) => window.errors.push(`${e.message} @${e.lineno}`));
+    addEventListener("unhandledrejection", (e) => window.errors.push(String(e.reason)));
+    // ha-icon is defined once the icons have loaded (see below); the elements already there upgrade then.
+    window.iconsLoaded = new Promise((resolve) => { window.iconsReady = resolve; });
+    window.missingIcons = new Set();
+  </script>
+  <script type="module">
+    import * as mdi from "https://cdn.jsdelivr.net/npm/@mdi/js@7.4.47/+esm";
+    const pathOf = (icon) => mdi[`mdi${(icon || "").replace("mdi:", "").split("-").map((w) => w[0]?.toUpperCase() + w.slice(1)).join("")}`];
+    customElements.define("ha-icon", class extends HTMLElement {
+      static get observedAttributes() { return ["icon"]; }
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML = `<style>
+          :host { display: inline-flex; align-items: center; justify-content: center; vertical-align: middle;
+                  width: var(--mdc-icon-size, 24px); height: var(--mdc-icon-size, 24px); }
+          svg { width: 100%; height: 100%; fill: currentColor; }</style><svg viewBox="0 0 24 24"><path></path></svg>`;
+      }
+      attributeChangedCallback() {
+        const icon = this.getAttribute("icon");
+        const d = pathOf(icon);
+        if (icon && !d) window.missingIcons.add(icon);
+        this.shadowRoot.querySelector("path").setAttribute("d", d || "");
+      }
+    });
+    window.iconsReady();
+  </script>
+  <script src="../../custom_components/eo_lite/frontend/eo-lite.js"></script>
+</head>
+<body>
+  <header><ha-icon class="menu" icon="mdi:menu"></ha-icon><span>Charger</span></header>
+  <main><div class="sections"></div></main>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const scene = params.get("scene") || "timers";
+    if (params.has("dark")) document.body.classList.add("dark");
+    // Headless windows are at least ~500px wide: lay a phone out at 390px and zoom it to fit.
+    if (params.has("phone")) document.documentElement.style.zoom = String(innerWidth / 390);
+
+    const C = "openeo_charger";
+    const NIGHT = ["23:30:00", "05:30:00", 32];
+    const PEAK = ["16:00:00", "19:00:00", 6];
+    // What the charger's doing in each scene: its timers ({slot: [from, until, amps]}), the toggles, and the session.
+    const SCENES = {
+      timers: { timers: { 1: NIGHT, 2: PEAK }, allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
+      charging: { timers: { 1: NIGHT, 2: PEAK }, allow: "on", only: "off", connected: "on", charging: "on", state: "charging", kw: 7.2, amps: 31.4, kwh: 12.35, cost: 1.5 },
+      off: { timers: {}, allow: "off", only: "off", connected: "off", charging: "off", state: "idle", kw: 0, amps: 0, kwh: 0, cost: 0 },
+      full: { timers: { 1: NIGHT, 2: PEAK, 3: ["12:00:00", "14:00:00", 16], 4: ["02:00:00", "04:00:00", 20] }, allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
+    };
+    const now = SCENES[scene];
+
+    const entity = (id, state, attributes = {}) => ({ entity_id: id, state: String(state), attributes });
+    const list = [
+      entity("switch.eo_lite_allow_charging", now.allow),
+      entity("switch.eo_lite_only_during_timers", now.only),
+      entity(`sensor.${C}_charger_state`, now.state, { since: now.charging === "on" ? "2 hours ago" : "48 minutes ago" }),
+      entity(`sensor.${C}_power_delivered`, now.kw.toFixed(2), { unit_of_measurement: "kW" }),
+      entity(`sensor.${C}_vehicle_current`, now.amps, { unit_of_measurement: "A" }),
+      entity(`binary_sensor.${C}_charging_active`, now.charging),
+      entity(`binary_sensor.${C}_vehicle_connected`, now.connected),
+      entity(`sensor.${C}_session_kwh`, now.kwh.toFixed(2), { unit_of_measurement: "kWh" }),
+      entity(`sensor.${C}_session_cost`, now.cost.toFixed(2), { unit_of_measurement: "GBP" }),
+      entity(`button.${C}_add_charge_schedule`, "unknown"),
+    ];
+    // The charger's integration has four timer slots.
+    for (let n = 1; n <= 4; n++) {
+      const [start, end, amps] = now.timers[n] || ["00:00:00", "00:00:00", 0];
+      list.push(
+        entity(`number.${C}_charge_schedule_${n}_current`, amps, { unit_of_measurement: "A" }),
+        entity(`time.${C}_charge_schedule_${n}_start`, start),
+        entity(`time.${C}_charge_schedule_${n}_end`, end),
+        entity(`button.${C}_delete_charge_schedule_${n}`, "unknown"),
+      );
+    }
+    const states = Object.fromEntries(list.map((s) => [s.entity_id, s]));
+
+    // What EO-Lite tells the dashboard (dashboard.websocket_config).
+    const setup = {
+      charger: C,
+      add_dashboard: false,
+      entities: {
+        charging_switch: `switch.${C}_charging`, timers_switch: `switch.${C}_timers`,
+        state: `sensor.${C}_charger_state`, power: `sensor.${C}_power_delivered`, vehicle_current: `sensor.${C}_vehicle_current`,
+        charging_active: `binary_sensor.${C}_charging_active`, vehicle_connected: `binary_sensor.${C}_vehicle_connected`,
+        session_kwh: `sensor.${C}_session_kwh`, session_cost: `sensor.${C}_session_cost`, add_timer: `button.${C}_add_charge_schedule`,
+        allow_charging: "switch.eo_lite_allow_charging", only_during_timers: "switch.eo_lite_only_during_timers",
+      },
+    };
+    const folded = (params.get("folded") || "").split(",").filter(Boolean);
+
+    window.hass = {
+      states,
+      config: { state: "RUNNING" },
+      user: { is_admin: true },
+      async callWS(msg) {
+        if (msg.type === "eo_lite/config") return setup;
+        if (msg.type === "frontend/get_user_data") return { value: { collapsed: folded } };
+        return null;
+      },
+      callService(domain, service, data, target) { (window.calls ||= []).push({ domain, service, data, target }); },
+    };
+
+    // Home Assistant's own cards (entities, tile, sensor), as they look. They
+    // go inside the charger card's shadow root, so each styles itself.
+    const ICONS = { "switch.eo_lite_allow_charging": "mdi:power-plug-battery", "switch.eo_lite_only_during_timers": "mdi:timer-outline" };
+    const CARD_CSS = `
+      :host { display: block; }
+      ha-card { display: block; background: var(--card-background-color); border-radius: 12px; border: 1px solid var(--divider-color); }
+      .rows { padding: 8px 16px; }
+      .row { display: flex; align-items: center; gap: 16px; height: 40px; margin: 4px 0; font-size: 14px; color: var(--primary-text-color); }
+      .row ha-icon { width: 40px; color: #44739e; }
+      .row.on ha-icon { color: #ffc107; }
+      .name { flex: 1; }
+      .switch { width: 36px; height: 14px; border-radius: 7px; background: rgba(var(--rgb-primary-text-color), 0.38); position: relative; margin-right: 4px; }
+      .switch::after { content: ""; position: absolute; top: -3px; left: -2px; width: 20px; height: 20px; border-radius: 50%;
+                       background: #fafafa; box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+      .on .switch { background: rgba(var(--rgb-primary-color), 0.5); }
+      .on .switch::after { left: 18px; background: var(--primary-color); }
+      .value { padding: 6px 10px; border-radius: 6px; background: rgba(var(--rgb-primary-text-color), 0.06); font-variant-numeric: tabular-nums; }
+      .action { color: var(--primary-color); font-weight: 500; text-transform: uppercase; letter-spacing: 0.0892857143em; padding: 0 8px; }
+      .tile { display: flex; align-items: center; gap: 10px; padding: 10px; }
+      .badge { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none;
+               color: #44739e; background: rgba(68, 115, 158, 0.2); }
+      .tile .name { font-size: 14px; font-weight: 500; color: var(--primary-text-color); }
+      .tile .state { font-size: 12px; color: var(--secondary-text-color); }
+      .sensor { position: relative; overflow: hidden; border-radius: 12px; }
+      .sensor .top { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 0; color: var(--secondary-text-color);
+                     font-size: 16px; font-weight: 500; }
+      .sensor .top ha-icon { color: #44739e; }
+      .sensor .reading { padding: 8px 16px 16px; color: var(--primary-text-color); }
+      .sensor .number { font-size: 28px; }
+      .sensor .unit { font-size: 18px; color: var(--secondary-text-color); margin-left: 4px; }
+      .sensor svg { display: block; width: 100%; height: 56px; }`;
+    // The last day's power as a line: nothing, then last night's charge (and now, while charging).
+    function graph(charging) {
+      const level = (x) => (x > 0.18 && x < 0.42 ? 1 : charging && x > 0.9 ? 1 : 0);
+      const points = Array.from({ length: 101 }, (_, i) => `${i * 5},${50 - 42 * level(i / 100)}`);
+      return `<svg viewBox="0 0 500 56" preserveAspectRatio="none">
+        <path d="M${points.join(" L")} L500,56 L0,56 Z" fill="rgba(255, 152, 0, 0.18)"></path>
+        <path d="M${points.join(" L")}" fill="none" stroke="#ff9800" stroke-width="3" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path></svg>`;
+    }
+    class MockCard extends HTMLElement {
+      constructor(config) {
+        super();
+        const row = (e) => {
+          if (e.type === "button") {
+            return `<div class="row"><ha-icon icon="${e.icon}"></ha-icon><span class="name">${e.name}</span><span class="action">${e.action_name}</span></div>`;
+          }
+          const s = states[e.entity];
+          const right = e.entity.startsWith("time.") ? `<span class="value">${s.state.slice(0, 5)}</span>`
+            : e.entity.startsWith("number.") ? `<span class="value">${s.state} ${s.attributes.unit_of_measurement}</span>`
+              : `<span class="switch"></span>`;
+          return `<div class="row ${s.state === "on" ? "on" : ""}"><ha-icon icon="${e.icon || ICONS[e.entity]}"></ha-icon><span class="name">${e.name}</span>${right}</div>`;
+        };
+        let html;
+        if (config.type === "tile") {
+          const s = states[config.entity];
+          const unit = s.attributes.unit_of_measurement;
+          const state = unit === "GBP" ? `£${s.state}` : unit ? `${s.state} ${unit}` : `${s.state} · ${s.attributes.since}`;
+          html = `<ha-card><div class="tile"><span class="badge"><ha-icon icon="${config.icon}"></ha-icon></span>
+            <span><div class="name">${config.name}</div><div class="state">${state}</div></span></div></ha-card>`;
+        } else if (config.type === "sensor") {
+          const s = states[config.entity];
+          html = `<ha-card><div class="sensor"><div class="top"><span>${config.name}</span><ha-icon icon="${config.icon}"></ha-icon></div>
+            <div class="reading"><span class="number">${s.state}</span><span class="unit">${s.attributes.unit_of_measurement}</span></div>${graph(now.charging === "on")}</div></ha-card>`;
+        } else {
+          const rows = config.entities.filter((e) => !e.conditions || e.conditions.every((c) => states[c.entity].state === c.state)).map((e) => e.row || e);
+          html = `<ha-card><div class="rows">${rows.map(row).join("")}</div></ha-card>`;
+        }
+        this.attachShadow({ mode: "open" }).innerHTML = `<style>${CARD_CSS}</style>${html}`;
+      }
+    }
+    customElements.define("mock-card", MockCard);
+    window.loadCardHelpers = async () => ({ createCardElement: (config) => new MockCard(config) });
+
+    window.ready = (async () => {
+      await window.iconsLoaded;
+      const dash = await customElements.get("ll-strategy-dashboard-eo-lite").generate({}, window.hass);
+      const sections = document.querySelector(".sections");
+      for (const section of dash.views[0].sections) {
+        for (const config of section.cards) {
+          const card = document.createElement(config.type.replace(/^custom:/, ""));
+          card.setConfig(config);
+          card.hass = window.hass;
+          sections.appendChild(card);
+        }
+      }
+      await new Promise((r) => setTimeout(r, 200));
+      document.body.dataset.ready = "true";
+    })().catch((err) => window.errors.push(String(err))).finally(() => {
+      document.body.dataset.errors = JSON.stringify(window.errors);
+      document.body.dataset.missing = [...window.missingIcons].join(" ");
+      document.body.dataset.width = `${innerWidth} ${document.documentElement.scrollWidth}`;
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,50 @@
+name: Validate
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+# Read-only: the checks never write to the repository.
+permissions:
+  contents: read
+
+# Actions are pinned to a commit rather than a branch or tag that can move.
+jobs:
+  hacs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main, Oct 2026
+        with:
+          category: integration
+          # Not in home-assistant/brands (yet).
+          ignore: brands
+
+  hassfest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: home-assistant/actions/hassfest@cd6f3635a740c84d8a14f6121a90068b8ece6bf6 # master, Oct 2026
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.14"
+          # Most of the job is installing Home Assistant: keep its downloads.
+          cache: pip
+          cache-dependency-path: requirements_test.txt
+      # The dashboard script must parse (Node comes with the runner).
+      - run: node --check custom_components/eo_lite/frontend/eo-lite.js
+      - run: node --check custom_components/eo_lite/frontend/eo-lite-loader.js
+      # The dashboard script's tests run in a stand-in browser.
+      - run: npm install --no-save jsdom
+      - run: node tests/dashboard.test.js
+      - run: pip install -r requirements_test.txt
+      - run: pytest

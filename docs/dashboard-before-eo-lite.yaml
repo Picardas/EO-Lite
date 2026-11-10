@@ -1,0 +1,269 @@
+title: Charger
+views:
+  - title: Charger
+    path: charger
+    icon: mdi:ev-station
+    type: sections
+    max_columns: 3
+    sections:
+      - type: grid
+        cards:
+          - type: heading
+            heading: Charger
+            heading_style: title
+            icon: mdi:ev-station
+          - type: markdown
+            text_only: true
+            content: >-
+              {% set p = states('sensor.openeo_charger_power_delivered') |
+              float(0) %} {% if
+              state_attr('sensor.openeo_charger_power_delivered',
+              'unit_of_measurement') == 'W' %}{% set p = p / 1000 %}{% endif %}
+              {% if
+              is_state('binary_sensor.openeo_charger_charging_active', 'on') %}
+              Charging at {{ p | round(1) }} kW · {{
+              states('sensor.openeo_charger_vehicle_current') | float(0) |
+              round(1) }} A {% elif
+              is_state('binary_sensor.openeo_charger_vehicle_connected', 'on')
+              %} Car plugged in · not charging {% else %} No car plugged in {%
+              endif %}
+          - type: tile
+            entity: sensor.openeo_charger_charger_state
+            name: Now
+            icon: mdi:ev-plug-type2
+            state_content:
+              - state
+              - last_changed
+            tap_action:
+              action: more-info
+          - type: entities
+            state_color: true
+            entities:
+              - entity: switch.openeo_charger_charging
+                name: Allow charging
+                icon: mdi:power-plug-battery
+              - entity: number.openeo_charger_current_limit
+                name: Max charge current
+                icon: mdi:current-ac
+      - type: grid
+        cards:
+          - type: heading
+            heading: Power
+            heading_style: title
+            icon: mdi:lightning-bolt
+          - type: markdown
+            text_only: true
+            content: >-
+              {% set c = '%.2f' |
+              format(states('sensor.openeo_charger_session_cost') | float(0)) %}
+              {% set u = state_attr('sensor.openeo_charger_session_cost',
+              'unit_of_measurement') or '' %} {% set sym = {'GBP': '£', 'EUR':
+              '€', 'USD': '$', '£': '£', '€': '€', '$': '$'} %} This session:
+              {{ states('sensor.openeo_charger_session_kwh') | float(0) |
+              round(2) }} kWh · {% if u in sym %}{{ sym[u] }}{{ c }}{% else %}{{
+              c }} {{ u }}{% endif %}
+          - type: sensor
+            entity: sensor.openeo_charger_power_delivered
+            name: Power now
+            icon: mdi:flash
+            graph: line
+            hours_to_show: 24
+            detail: 2
+          - type: tile
+            entity: sensor.openeo_charger_session_kwh
+            name: Energy this session
+            icon: mdi:battery-charging
+            grid_options:
+              columns: 6
+          - type: tile
+            entity: sensor.openeo_charger_session_cost
+            name: Cost this session
+            icon: mdi:cash
+            grid_options:
+              columns: 6
+      - type: grid
+        cards:
+          - type: heading
+            heading: Timers
+            heading_style: title
+            icon: mdi:timer-outline
+          - type: markdown
+            text_only: true
+            content: >-
+              {% set ns = namespace(t=[]) %} {% for n in range(1, 5) %} {% set a
+              = states('number.openeo_charger_charge_schedule_' ~ n ~ '_current')
+              | float(0) %} {% if a > 0 %} {% set s =
+              states('time.openeo_charger_charge_schedule_' ~ n ~ '_start') %} {%
+              set e = states('time.openeo_charger_charge_schedule_' ~ n ~ '_end')
+              %} {% set s = '--:--' if s in ['unknown', 'unavailable'] else s[:5]
+              %} {% set e = '--:--' if e in ['unknown', 'unavailable'] else e[:5]
+              %} {% set ns.t = ns.t + [s ~ '–' ~ e] %} {% endif %} {% endfor %} {%
+              if not ns.t %}No timers yet {% elif
+              is_state('switch.openeo_charger_timers', 'on') %}{{ ns.t | join(' · ')
+              }} {% else %}Off · {{ ns.t | join(' · ') }}{% endif %}
+          - type: entities
+            state_color: true
+            entities:
+              - entity: switch.openeo_charger_timers
+                name: Only charge during timers
+                icon: mdi:timer-outline
+              # Shows while at least one of the four slots is free. Pressing it
+              # adds a timer, whose card appears below, ready to fill in.
+              - type: conditional
+                conditions:
+                  - condition: or
+                    conditions:
+                      - condition: numeric_state
+                        entity: number.openeo_charger_charge_schedule_1_current
+                        below: 1
+                      - condition: state
+                        entity: number.openeo_charger_charge_schedule_1_current
+                        state:
+                          - unknown
+                          - unavailable
+                      - condition: numeric_state
+                        entity: number.openeo_charger_charge_schedule_2_current
+                        below: 1
+                      - condition: state
+                        entity: number.openeo_charger_charge_schedule_2_current
+                        state:
+                          - unknown
+                          - unavailable
+                      - condition: numeric_state
+                        entity: number.openeo_charger_charge_schedule_3_current
+                        below: 1
+                      - condition: state
+                        entity: number.openeo_charger_charge_schedule_3_current
+                        state:
+                          - unknown
+                          - unavailable
+                      - condition: numeric_state
+                        entity: number.openeo_charger_charge_schedule_4_current
+                        below: 1
+                      - condition: state
+                        entity: number.openeo_charger_charge_schedule_4_current
+                        state:
+                          - unknown
+                          - unavailable
+                row:
+                  type: button
+                  name: New timer
+                  icon: mdi:timer-plus-outline
+                  action_name: Add
+                  tap_action:
+                    action: perform-action
+                    perform_action: button.press
+                    target:
+                      entity_id: button.openeo_charger_add_charge_schedule
+          - type: entities
+            title: Timer 1
+            state_color: true
+            visibility:
+              - condition: numeric_state
+                entity: number.openeo_charger_charge_schedule_1_current
+                above: 0
+            entities:
+              - entity: time.openeo_charger_charge_schedule_1_start
+                name: From
+                icon: mdi:clock-start
+              - entity: time.openeo_charger_charge_schedule_1_end
+                name: Until
+                icon: mdi:clock-end
+              - entity: number.openeo_charger_charge_schedule_1_current
+                name: Charge current
+                icon: mdi:current-ac
+              - type: button
+                name: Delete this timer
+                icon: mdi:delete-outline
+                action_name: Delete
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.openeo_charger_delete_charge_schedule_1
+                  confirmation:
+                    text: Delete timer 1?
+          - type: entities
+            title: Timer 2
+            state_color: true
+            visibility:
+              - condition: numeric_state
+                entity: number.openeo_charger_charge_schedule_2_current
+                above: 0
+            entities:
+              - entity: time.openeo_charger_charge_schedule_2_start
+                name: From
+                icon: mdi:clock-start
+              - entity: time.openeo_charger_charge_schedule_2_end
+                name: Until
+                icon: mdi:clock-end
+              - entity: number.openeo_charger_charge_schedule_2_current
+                name: Charge current
+                icon: mdi:current-ac
+              - type: button
+                name: Delete this timer
+                icon: mdi:delete-outline
+                action_name: Delete
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.openeo_charger_delete_charge_schedule_2
+                  confirmation:
+                    text: Delete timer 2?
+          - type: entities
+            title: Timer 3
+            state_color: true
+            visibility:
+              - condition: numeric_state
+                entity: number.openeo_charger_charge_schedule_3_current
+                above: 0
+            entities:
+              - entity: time.openeo_charger_charge_schedule_3_start
+                name: From
+                icon: mdi:clock-start
+              - entity: time.openeo_charger_charge_schedule_3_end
+                name: Until
+                icon: mdi:clock-end
+              - entity: number.openeo_charger_charge_schedule_3_current
+                name: Charge current
+                icon: mdi:current-ac
+              - type: button
+                name: Delete this timer
+                icon: mdi:delete-outline
+                action_name: Delete
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.openeo_charger_delete_charge_schedule_3
+                  confirmation:
+                    text: Delete timer 3?
+          - type: entities
+            title: Timer 4
+            state_color: true
+            visibility:
+              - condition: numeric_state
+                entity: number.openeo_charger_charge_schedule_4_current
+                above: 0
+            entities:
+              - entity: time.openeo_charger_charge_schedule_4_start
+                name: From
+                icon: mdi:clock-start
+              - entity: time.openeo_charger_charge_schedule_4_end
+                name: Until
+                icon: mdi:clock-end
+              - entity: number.openeo_charger_charge_schedule_4_current
+                name: Charge current
+                icon: mdi:current-ac
+              - type: button
+                name: Delete this timer
+                icon: mdi:delete-outline
+                action_name: Delete
+                tap_action:
+                  action: perform-action
+                  perform_action: button.press
+                  target:
+                    entity_id: button.openeo_charger_delete_charge_schedule_4
+                  confirmation:
+                    text: Delete timer 4?

@@ -1,0 +1,31 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "EO-Lite",
+        "description": "An overall Allow charging, an Only during timers that means it, and a Charger dashboard with the charger's timers, for an OpenEO charger that's already in Home Assistant.\n\nThe two toggles start as the charger is now, so setting this up changes nothing by itself.",
+        "data": {
+          "charger": "Charger",
+          "dashboard": "Charger dashboard"
+        },
+        "data_description": {
+          "charger": "The charger whose charging and timers switches EO-Lite sets.",
+          "dashboard": "Add EO-Lite's Charger dashboard to the sidebar the next time an admin opens Home Assistant (once: if you delete it, it stays deleted)."
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "EO-Lite is already set up.",
+      "no_charger": "No charger found. Set up the OpenEO charger's own integration first: EO-Lite looks for its charging and timers switches."
+    },
+    "create_entry": {
+      "default": "Reload the browser: EO-Lite then adds its Charger dashboard to the sidebar (unless you turned that off)."
+    }
+  },
+  "entity": {
+    "switch": {
+      "allow_charging": { "name": "Allow charging" },
+      "only_during_timers": { "name": "Only during timers" }
+    }
+  }
+}

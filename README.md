@@ -15,9 +15,9 @@ OpenEO charger that's already in Home Assistant.** EO-Lite gives you:
 It sits on top of the charger's own integration and uses its entities. It
 doesn't talk to the charger itself.
 
-| ![The Charger dashboard on a phone: now, when to charge, each timer, and power](docs/images/charger-phone.png) | ![The same with the timers and power folded: each heading still sums its block up](docs/images/charger-folded.png) | ![Charging now, in the dark theme](docs/images/charger-charging-dark.png) |
+| ![The Charger dashboard on a phone: the status card with the toggles and the day's timers, each timer, and power](docs/images/charger-phone.png) | ![The same with the timers and power folded: each heading still sums its block up](docs/images/charger-folded.png) | ![Charging now, in the dark theme](docs/images/charger-charging-dark.png) |
 | :---: | :---: | :---: |
-| Now, when to charge, each timer, power | Fold what you don't need: the headings still tell you | Charging, in the dark theme |
+| What it's doing, the toggles, each timer, power | Fold what you don't need: the headings still tell you | Charging, in the dark theme |
 
 <sub>The screenshots show the Charger dashboard with a sample charger.</sub>
 
@@ -73,19 +73,25 @@ charger's from them:
 
 ## The Charger dashboard
 
-One card, **Charger**, of blocks that each fold away (tap a heading; tap
-**Charger** to fold them all). Each heading sums its block up, so a folded
-one still tells you what you need. Which blocks are folded is each person's
-own.
+One card, **Charger** (tap it to fold it all away), styled like the Hue-Lite
+dashboard:
 
-- **Now**: what the charger's doing.
-- **When to charge**: Allow charging, with Only during timers under it while
-  that's on.
-- **Timer 1, 2, …**: one block for each timer, with its times and its own
-  charge current (a low one for slow charging at peak times, say) and a
-  button to delete it. **New timer** adds one while the charger has a slot
-  free.
+- **The status card** says what the charger's doing (charging, plugged in
+  and when it'll start, or ready), with the power while it's charging. Tap
+  it for the charger's history. Below that are **Allow charging**, and
+  **Only during timers** under it while that's on, each saying what it
+  means. While only the timers decide, a strip shows the day's timers with
+  now marked.
+- **Timer 1, 2, …**: a block for each timer, with its times and its own
+  charge current (a low one for slow charging at peak times, say). Delete
+  shows while there's more than one: the charger always keeps one, and
+  deleting a timer moves the later ones up a number. **New timer** adds one
+  (22:00–06:00 at 16 A, the charger's default). There's no limit.
 - **Power**: power now, and this session's energy and cost.
+
+The timer and power blocks fold away (tap a heading), and each heading sums
+its block up, so a folded one still tells you what you need. Which are
+folded is each person's own.
 
 The dashboard is a strategy, so it's built each time it loads. To add it to
 a dashboard of your own:
@@ -97,10 +103,10 @@ strategy:
 
 ## Limitations
 
-- **The timers are the charger's.** EO-Lite shows as many as the charger's
-  integration has slots for (`number.openeo_charger_charge_schedule_<n>_current`
-  and the entities beside it). More than that needs a change to that
-  integration.
+- **The timers are the charger's.** They're openeo's daily time windows
+  (`number.openeo_charger_charge_schedule_<n>_current` and the entities
+  beside it), with no days of the week. A new timer's entities take a few
+  seconds to appear.
 - **The charger's overall current limit** isn't on the dashboard. Charging
   outside the timers uses it as it's set on the charger.
 - **One charger.**

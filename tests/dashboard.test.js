@@ -27,42 +27,52 @@ const SETUP = {
     session_kwh: `sensor.${C}_session_kwh`,
     session_cost: `sensor.${C}_session_cost`,
     add_timer: `button.${C}_add_charge_schedule`,
-    allow_charging: "switch.eo_lite_allow_charging",
-    only_during_timers: "switch.eo_lite_only_during_timers",
+    allow_charging: "switch.front_garden_eo_lite_allow_charging",
+    only_during_timers: "switch.front_garden_eo_lite_only_during_timers",
   },
 };
 const E = SETUP.entities;
 
-// A house whose charger has `slots` timer slots; `timers` gives the ones in
-// use as {n: [start, end, amps]}, and `extra` any other states.
-function states(slots, timers, extra = {}) {
+// A house whose charger has these timers ([start, end, amps] each, from
+// timer 1), and `extra` any other states.
+function states(timers, extra = {}) {
   const s = {
     "light.kitchen": { state: "on", attributes: {} },
     [E.allow_charging]: { state: "off", attributes: {} },
     [E.only_during_timers]: { state: "off", attributes: {} },
+    [E.state]: { state: "idle", attributes: {} },
     [E.charging_active]: { state: "off", attributes: {} },
     [E.vehicle_connected]: { state: "off", attributes: {} },
     [E.power]: { state: "0", attributes: { unit_of_measurement: "kW" } },
     [E.vehicle_current]: { state: "0", attributes: {} },
     [E.session_kwh]: { state: "0", attributes: {} },
     [E.session_cost]: { state: "0", attributes: { unit_of_measurement: "GBP" } },
+    [E.add_timer]: { state: "unknown", attributes: {} },
   };
-  for (let n = 1; n <= slots; n++) {
-    const [start, end, amps] = timers[n] || ["00:00:00", "00:00:00", 0];
+  timers.forEach(([start, end, amps], i) => {
+    const n = i + 1;
     s[`number.${C}_charge_schedule_${n}_current`] = { state: String(amps), attributes: { unit_of_measurement: "A" } };
     s[`time.${C}_charge_schedule_${n}_start`] = { state: start, attributes: {} };
     s[`time.${C}_charge_schedule_${n}_end`] = { state: end, attributes: {} };
     s[`button.${C}_delete_charge_schedule_${n}`] = { state: "unknown", attributes: {} };
-  }
+  });
   return { ...s, ...extra };
 }
 const on = (...ids) => Object.fromEntries(ids.map((id) => [id, { state: "on", attributes: {} }]));
 
-// A page with the script loaded. `stored` is the folded blocks saved for this
-// person; `page` what the page's own hass answers (for adding the dashboard).
-function page({ stored, page: pageHass } = {}) {
+// A page with the script loaded, its clock at `now` (HH:MM today). `stored`
+// is the folded blocks saved for this person; `page` what the page's own
+// hass answers (for adding the dashboard).
+function page({ stored, page: pageHass, now = "12:00" } = {}) {
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only", url: "http://ha.local/charger/charger" });
   const { window } = dom;
+  const [h, m] = now.split(":").map(Number);
+  const fixed = new Date(2026, 10, 18, h, m).getTime();
+  const RealDate = window.Date;
+  window.Date = class extends RealDate {
+    constructor(...args) { super(...(args.length ? args : [fixed])); }
+    static now() { return fixed; }
+  };
   window.loadCardHelpers = async () => ({
     createCardElement(config) {
       const el = window.document.createElement("stub-card");
@@ -77,6 +87,7 @@ function page({ stored, page: pageHass } = {}) {
   }
   window.eval(SCRIPT);
   const saved = [];
+  const services = [];
   const ws = { stored };
   const callWS = async (msg) => {
     if (msg.type === "eo_lite/config") return SETUP;
@@ -84,32 +95,37 @@ function page({ stored, page: pageHass } = {}) {
     if (msg.type === "frontend/set_user_data") { saved.push(plain(msg)); ws.stored = msg.value; return {}; }
     throw new Error(`unexpected ${msg.type}`);
   };
-  return { window, callWS, saved };
+  const callService = (domain, service, data, target) => services.push(plain({ domain, service, data, target }));
+  return { window, callWS, callService, saved, services };
 }
 
 // The Charger dashboard as its strategy builds it, with its card on the page.
 async function setup(options) {
-  const { window, callWS, saved } = page(options);
+  const { window, callWS, callService, saved, services } = page(options);
   const strategy = window.customElements.get("ll-strategy-dashboard-eo-lite");
   const dashboard = await strategy.generate({ type: "custom:eo-lite" }, { callWS, config: { state: "RUNNING" } });
   const config = dashboard.views[0].sections[0].cards[0];
   const card = window.document.createElement("eo-lite-charger");
   card.setConfig(config);
   window.document.body.appendChild(card);
-  const show = async (s) => { card.hass = { states: s, callWS }; await tick(); await tick(); };
+  const show = async (s) => { card.hass = { states: s, callWS, callService }; await tick(); await tick(); };
   const root = card.shadowRoot;
+  const $ = (sel) => root.querySelector(sel);
   const blocks = () => [...root.querySelectorAll(".block")];
   const block = (id) => blocks().find((b) => b.dataset.id === id);
   const titles = () => blocks().map((b) => b.querySelector(".title").textContent);
   const summary = (id) => block(id).querySelector(".summary").textContent;
-  const cards = (id) => [...block(id).querySelectorAll(".body > stub-card")].map((c) => plain(c.config));
-  const addShown = () => !root.querySelector(".add").hidden;
-  const note = () => (root.querySelector(".note").hidden ? "" : root.querySelector(".note").textContent);
-  return { window, dashboard: plain(dashboard), config: plain(config), card, root, show, blocks, block, titles, summary, cards, addShown, note, saved };
+  const cards = (id) => [...block(id).querySelectorAll(".body > stub-card")];
+  const shown = (sel) => !$(sel).hidden;
+  const note = () => ($(".note").hidden ? "" : $(".note").textContent);
+  const line = () => `${$(".top .name").textContent} · ${$(".top .state").textContent}`;
+  // Each stretch on the strip as [from, width], in percent of the day.
+  const spans = () => [...root.querySelectorAll(".track .span")].map((s) => [parseFloat(s.style.left), parseFloat(s.style.width)]);
+  return { window, dashboard: plain(dashboard), config: plain(config), card, root, $, show, blocks, block, titles, summary, cards, shown, note, line, spans, saved, services };
 }
 
-const NIGHT = ["23:30:00", "05:30:00", 16];
-const NOON = ["12:00:00", "14:15:00", 10.5];
+const NIGHT = ["23:30:00", "05:30:00", 32];
+const PEAK = ["16:00:00", "19:00:00", 6];
 const tests = [];
 const test = (name, fn) => tests.push([name, fn]);
 
@@ -123,7 +139,7 @@ test("the strategy builds one view holding the charger card", async () => {
   assert.equal(d.config.type, "custom:eo-lite-charger");
   assert.equal(d.config.charger, C);
   // Nothing on it switches the charger's own switches, or its overall current limit.
-  const text = JSON.stringify(d.config.blocks) + JSON.stringify(d.config.more);
+  const text = JSON.stringify(d.config.more);
   assert.ok(!text.includes(E.charging_switch) && !text.includes(E.timers_switch) && !text.includes("current_limit"));
 });
 
@@ -137,237 +153,248 @@ test("while EO-Lite isn't set up, the dashboard says so", async () => {
   assert.match(missing.views[0].cards[0].content, /isn't set up/);
 });
 
-test("the blocks: now, when to charge, the timers, then power", async () => {
+test("the status card first, then each timer, New timer, then power", async () => {
   const d = await setup();
-  await d.show(states(4, { 1: NIGHT, 3: NOON }));
-  assert.deepEqual(d.titles(), ["Now", "When to charge", "Timer 1", "Timer 3", "Power"]);
-  assert.equal(d.root.querySelector("h2").textContent, "Charger");
-  // New timer comes after the timers, before Power.
-  const order = [...d.root.querySelector(".blocks").children].map((el) => el.dataset.id || el.className);
-  assert.deepEqual(order, ["now", "when", "timer_1", "timer_3", "new", "power"]);
+  await d.show(states([NIGHT, PEAK]));
+  const order = [...d.$(".blocks").children].map((el) => el.dataset.id || el.classList[0]);
+  assert.deepEqual(order, ["status", "timer_1", "timer_2", "new", "power"]);
+  assert.equal(d.$("h2").textContent, "Charger");
+  // The status card doesn't fold.
+  assert.equal(d.$(".status .chev"), null);
 });
 
-test("both toggles are in one block, Only during timers under Allow charging while it's on", async () => {
-  const d = await setup();
-  await d.show(states(4, {}));
-  const [entities] = d.cards("when");
-  assert.equal(entities.type, "entities");
-  assert.deepEqual(entities.entities[0], { entity: E.allow_charging, name: "Allow charging" });
-  assert.deepEqual(entities.entities[1], {
-    type: "conditional",
-    conditions: [{ entity: E.allow_charging, state: "on" }],
-    row: { entity: E.only_during_timers, name: "Only during timers" },
-  });
-});
+// ---- The status card ----------------------------------------------------------
 
-// ---- The summaries -----------------------------------------------------------
-
-test("When to charge says what the toggles mean", async () => {
+test("it says what the charger's doing, and shows power while charging", async () => {
   const d = await setup();
-  const timers = { 1: NIGHT, 3: NOON };
-  await d.show(states(4, timers));
-  assert.equal(d.summary("when"), "Off");
-  // Only during timers alone doesn't allow charging.
-  await d.show(states(4, timers, on(E.only_during_timers)));
-  assert.equal(d.summary("when"), "Off");
-  await d.show(states(4, timers, on(E.allow_charging)));
-  assert.equal(d.summary("when"), "Whenever the car's plugged in");
-  await d.show(states(4, timers, on(E.allow_charging, E.only_during_timers)));
-  assert.equal(d.summary("when"), "Only 23:30–05:30 · 12:00–14:15");
-  await d.show(states(4, {}, on(E.allow_charging, E.only_during_timers)));
-  assert.equal(d.summary("when"), "Only during timers: none yet");
-  // Before EO-Lite has seen the charger, its toggles aren't on or off.
-  await d.show(states(4, {}, { [E.allow_charging]: { state: "unknown", attributes: {} } }));
-  assert.equal(d.summary("when"), "Waiting for the charger");
-});
-
-test("Now says what the charger's doing", async () => {
-  const d = await setup();
-  await d.show(states(4, {}));
-  assert.equal(d.summary("now"), "No car plugged in");
-  await d.show(states(4, {}, on(E.vehicle_connected)));
-  assert.equal(d.summary("now"), "Car plugged in · not charging");
-  await d.show(states(4, {}, {
-    ...on(E.vehicle_connected, E.charging_active),
+  await d.show(states([NIGHT]));
+  assert.equal(d.line(), "Ready · No car plugged in");
+  assert.equal(d.$(".status").className, "status idle");
+  assert.equal(d.shown(".reading"), false);
+  await d.show(states([NIGHT], on(E.vehicle_connected, E.allow_charging)));
+  assert.equal(d.line(), "Plugged in · Not charging");
+  assert.equal(d.$(".status").className, "status waiting lit");
+  await d.show(states([NIGHT], {
+    ...on(E.vehicle_connected, E.charging_active, E.allow_charging),
     [E.power]: { state: "7200", attributes: { unit_of_measurement: "W" } },
     [E.vehicle_current]: { state: "31.44", attributes: {} },
+    [E.session_kwh]: { state: "12.345", attributes: {} },
   }));
-  assert.equal(d.summary("now"), "Charging at 7.2 kW · 31.4 A");
-  await d.show(states(4, {}, { ...on(E.charging_active), [E.power]: { state: "3.6", attributes: { unit_of_measurement: "kW" } } }));
-  assert.equal(d.summary("now"), "Charging at 3.6 kW · 0.0 A");
+  assert.equal(d.line(), "Charging · 31.4 A · 12.35 kWh so far");
+  assert.equal(d.$(".status").className, "status charging lit");
+  assert.equal(d.shown(".reading"), true);
+  assert.equal(d.$(".reading .value").textContent, "7.2");
 });
 
-test("Power sums up the session", async () => {
+test("plugged in, it says why it isn't charging", async () => {
+  const d = await setup({ now: "12:00" });
+  await d.show(states([NIGHT, PEAK], on(E.vehicle_connected)));
+  assert.equal(d.line(), "Plugged in · Charging is off");
+  // Only during timers: the next one to start, 16:00 at noon.
+  await d.show(states([NIGHT, PEAK], on(E.vehicle_connected, E.allow_charging, E.only_during_timers)));
+  assert.equal(d.line(), "Plugged in · Charges from 16:00");
+  // After 19:00 it's 23:30's.
+  const late = await setup({ now: "20:15" });
+  await late.show(states([NIGHT, PEAK], on(E.vehicle_connected, E.allow_charging, E.only_during_timers)));
+  assert.equal(late.line(), "Plugged in · Charges from 23:30");
+});
+
+test("a charger that isn't answering", async () => {
   const d = await setup();
-  await d.show(states(4, {}, {
-    [E.session_kwh]: { state: "12.345", attributes: {} },
-    [E.session_cost]: { state: "1.5", attributes: { unit_of_measurement: "GBP" } },
-  }));
-  assert.equal(d.summary("power"), "This session: 12.35 kWh · £1.50");
-  await d.show(states(4, {}, { [E.session_cost]: { state: "2", attributes: { unit_of_measurement: "SEK" } } }));
-  assert.equal(d.summary("power"), "This session: 0.00 kWh · 2.00 SEK");
-  assert.deepEqual(d.cards("power").map((c) => [c.type, c.entity]), [["sensor", E.power], ["tile", E.session_kwh], ["tile", E.session_cost]]);
+  const gone = states([NIGHT]);
+  for (const id of Object.keys(gone)) if (id.includes(C)) gone[id] = { state: "unavailable", attributes: {} };
+  await d.show(gone);
+  assert.equal(d.line(), "Not answering · Home Assistant can't reach the charger");
+  assert.match(d.$(".status").className, /unavailable/);
+  assert.equal(d.note(), "The charger isn't answering, so timers can't be added.");
+  assert.equal(d.shown(".add"), false);
+});
+
+test("tapping the charger opens its history", async () => {
+  const d = await setup();
+  await d.show(states([NIGHT]));
+  let opened = null;
+  d.card.addEventListener("hass-more-info", (ev) => { opened = ev.detail.entityId; });
+  d.$(".top").click();
+  assert.equal(opened, E.state);
+});
+
+test("the toggles say what they mean, Only during timers under Allow charging while it's on", async () => {
+  const d = await setup();
+  await d.show(states([NIGHT, PEAK]));
+  assert.equal(d.$(".allow .hint").textContent, "The car won't charge, timers included");
+  assert.equal(d.$(".allow ha-switch").checked, false);
+  assert.equal(d.shown(".timed"), false);
+  await d.show(states([NIGHT, PEAK], on(E.allow_charging)));
+  assert.equal(d.$(".allow .hint").textContent, "Whenever the car's plugged in");
+  assert.equal(d.shown(".timed"), true);
+  assert.equal(d.$(".timed ha-switch").checked, false);
+  assert.equal(d.$(".timed .hint").textContent, "23:30–05:30 · 16:00–19:00");
+  await d.show(states([NIGHT, PEAK], on(E.allow_charging, E.only_during_timers)));
+  assert.equal(d.$(".allow .hint").textContent, "Only during the timers");
+  assert.equal(d.$(".timed ha-switch").checked, true);
+  assert.ok(d.$(".allow").classList.contains("on") && d.$(".timed").classList.contains("on"));
+  // Before EO-Lite has seen the charger, its toggles aren't on or off.
+  await d.show(states([], { [E.allow_charging]: { state: "unknown", attributes: {} } }));
+  assert.equal(d.$(".allow .hint").textContent, "Waiting for the charger");
+});
+
+test("switching a toggle switches EO-Lite's switch", async () => {
+  const d = await setup();
+  await d.show(states([NIGHT], on(E.allow_charging)));
+  const toggle = d.$(".timed ha-switch");
+  toggle.checked = true;
+  toggle.dispatchEvent(new d.window.Event("change"));
+  const allow = d.$(".allow ha-switch");
+  allow.checked = false;
+  allow.dispatchEvent(new d.window.Event("change"));
+  assert.deepEqual(d.services, [
+    { domain: "switch", service: "turn_on", data: {}, target: { entity_id: E.only_during_timers } },
+    { domain: "switch", service: "turn_off", data: {}, target: { entity_id: E.allow_charging } },
+  ]);
+});
+
+test("the day's timers show on a strip while they decide, with now marked", async () => {
+  const d = await setup({ now: "06:00" });
+  await d.show(states([NIGHT, PEAK], on(E.allow_charging)));
+  // Charging any time: the timers don't decide, so no strip.
+  assert.equal(d.shown(".day"), false);
+  await d.show(states([NIGHT, PEAK], on(E.allow_charging, E.only_during_timers)));
+  assert.equal(d.shown(".day"), true);
+  // 23:30–05:30 runs past midnight, so it's two stretches; then 16:00–19:00.
+  assert.deepEqual(d.spans(), [[97.92, 2.08], [0, 22.92], [66.67, 12.5]]);
+  assert.equal(parseFloat(d.$(".track .now").style.left), 25);
 });
 
 // ---- The timers ---------------------------------------------------------------
 
-test("each timer's heading has its times and current", async () => {
+test("every timer the charger has gets a block, with its times and current on the heading", async () => {
   const d = await setup();
-  await d.show(states(4, { 1: NIGHT, 3: NOON }));
-  assert.equal(d.summary("timer_1"), "23:30–05:30 · 16 A");
-  assert.equal(d.summary("timer_3"), "12:00–14:15 · 10.5 A");
-  assert.equal(d.addShown(), true);
+  await d.show(states([NIGHT]));
+  assert.deepEqual(d.titles(), ["Timer 1", "Power"]);
+  assert.equal(d.summary("timer_1"), "23:30–05:30 · 32 A");
+  // New timer is there even with one timer: the charger has no fixed number of them.
+  assert.equal(d.shown(".add"), true);
   assert.equal(d.note(), "");
-  // And follows them; a time not set yet shows as dashes.
-  await d.show(states(4, { 1: ["unknown", "05:30:00", 20], 3: NOON }));
+  // A time not set yet shows as dashes.
+  await d.show(states([["unknown", "05:30:00", 20]]));
   assert.equal(d.summary("timer_1"), "--:--–05:30 · 20 A");
 });
 
-test("each timer's block holds its settings, its own current and its delete button", async () => {
+test("each timer's block holds its settings, and Delete while there's more than one", async () => {
   const d = await setup();
-  await d.show(states(4, { 3: NOON }));
-  const [entities] = d.cards("timer_3");
-  assert.deepEqual(entities.entities.slice(0, 3).map((r) => [r.entity, r.name]), [
-    [`time.${C}_charge_schedule_3_start`, "From"],
-    [`time.${C}_charge_schedule_3_end`, "Until"],
-    [`number.${C}_charge_schedule_3_current`, "Charge current"],
+  await d.show(states([NIGHT]));
+  const rows = (n) => plain(d.cards(`timer_${n}`)[0].config).entities;
+  const [settings] = d.cards("timer_1");
+  // The only timer can't be deleted (the charger would put it back to 22:00–06:00).
+  assert.deepEqual(rows(1).map((r) => [r.entity, r.name]), [
+    [`time.${C}_charge_schedule_1_start`, "From"],
+    [`time.${C}_charge_schedule_1_end`, "Until"],
+    [`number.${C}_charge_schedule_1_current`, "Charge current"],
   ]);
-  assert.equal(entities.entities[3].tap_action.target.entity_id, `button.${C}_delete_charge_schedule_3`);
-  assert.equal(entities.entities[3].tap_action.confirmation.text, "Delete timer 3?");
+  // With two, each has Delete, at the end of its card.
+  await d.show(states([NIGHT, PEAK]));
+  assert.equal(d.cards("timer_1").length, 1);
+  assert.equal(rows(1).at(-1).name, "Delete this timer");
+  const action = rows(2).at(-1).tap_action;
+  assert.equal(action.target.entity_id, `button.${C}_delete_charge_schedule_2`);
+  assert.equal(action.confirmation.text, "Delete timer 2? The timers after it move up a number.");
   // New timer presses the charger's add button.
-  const add = plain(d.root.querySelector(".add > stub-card").config).entities[0];
+  const add = plain(d.$(".add > stub-card").config).entities[0];
   assert.equal(add.tap_action.perform_action, "button.press");
   assert.equal(add.tap_action.target.entity_id, E.add_timer);
   // The cards inside are handed hass.
-  assert.ok(d.block("timer_3").querySelector("stub-card").hass.states["light.kitchen"]);
-  assert.ok(d.block("now").querySelector("stub-card").hass.states["light.kitchen"]);
+  assert.ok(settings.hass.states["light.kitchen"]);
+  // Back to one: Delete goes again.
+  await d.show(states([NIGHT]));
+  assert.equal(rows(1).length, 3);
 });
 
-test("a new timer appears in order without disturbing the others", async () => {
+test("a new timer appears without disturbing the others", async () => {
   const d = await setup();
-  await d.show(states(4, { 1: NIGHT, 3: NOON }));
+  await d.show(states([NIGHT]));
+  await d.show(states([NIGHT, PEAK]));
   const first = d.block("timer_1");
-  const third = d.block("timer_3");
   first.querySelector(".head").click();
   const firstCard = first.querySelector("stub-card");
-  await d.show(states(4, { 1: NIGHT, 2: ["07:00:00", "08:00:00", 32], 3: NOON }));
-  assert.deepEqual(d.titles(), ["Now", "When to charge", "Timer 1", "Timer 2", "Timer 3", "Power"]);
+  // New timer pressed: the charger adds 22:00–06:00 at 16 A.
+  await d.show(states([NIGHT, PEAK, ["22:00:00", "06:00:00", 16]]));
+  assert.deepEqual(d.titles(), ["Timer 1", "Timer 2", "Timer 3", "Power"]);
   assert.equal(d.block("timer_1"), first);
-  assert.equal(d.block("timer_3"), third);
   assert.equal(first.querySelector("stub-card"), firstCard);
   // The one that was folded still is; the new one starts open.
   assert.equal(first.classList.contains("collapsed"), true);
-  assert.equal(d.block("timer_2").classList.contains("collapsed"), false);
+  assert.equal(d.block("timer_3").classList.contains("collapsed"), false);
+  assert.equal(d.summary("timer_3"), "22:00–06:00 · 16 A");
 });
 
-test("with every slot in use, New timer gives way to why", async () => {
+test("there's no limit on timers", async () => {
   const d = await setup();
-  await d.show(states(4, { 1: NIGHT, 2: NOON, 3: NOON, 4: NOON }));
-  assert.equal(d.addShown(), false);
-  assert.equal(d.note(), "All 4 timers are in use. Delete one to add another.");
-  // Deleting one brings New timer back.
-  await d.show(states(4, { 1: NIGHT, 2: NOON, 4: NOON }));
-  assert.deepEqual(d.titles(), ["Now", "When to charge", "Timer 1", "Timer 2", "Timer 4", "Power"]);
-  assert.equal(d.addShown(), true);
-  assert.equal(d.note(), "");
+  await d.show(states(Array.from({ length: 9 }, () => NIGHT)));
+  assert.deepEqual(d.titles().slice(0, -1), [1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => `Timer ${n}`));
+  assert.equal(d.shown(".add"), true);
 });
 
-test("shows as many timers as the charger's integration has slots for", async () => {
+test("deleting a timer moves the later ones up, and the last one's block goes", async () => {
+  const d = await setup({ stored: { collapsed: ["timer_3"] } });
+  await d.show(states([NIGHT, PEAK, ["12:00:00", "14:00:00", 10]]));
+  assert.equal(d.block("timer_3").classList.contains("collapsed"), true);
+  // Timer 2 deleted: the charger's timer 3 is now its timer 2.
+  await d.show(states([NIGHT, ["12:00:00", "14:00:00", 10]]));
+  assert.deepEqual(d.titles(), ["Timer 1", "Timer 2", "Power"]);
+  assert.equal(d.summary("timer_2"), "12:00–14:00 · 10 A");
+  // Timer 3's folded state is forgotten, so a new timer 3 starts open.
+  assert.deepEqual(d.saved.at(-1).value, { collapsed: [] });
+});
+
+// ---- Power and folding -----------------------------------------------------------
+
+test("Power sums up the session", async () => {
   const d = await setup();
-  const timers = Object.fromEntries(Array.from({ length: 12 }, (_, i) => [i + 1, NIGHT]));
-  delete timers[11];
-  await d.show(states(12, timers));
-  assert.deepEqual(d.titles().slice(2, -1), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12].map((n) => `Timer ${n}`));
-  assert.equal(d.addShown(), true);
-  await d.show(states(12, { ...timers, 11: NOON }));
-  assert.equal(d.titles()[12], "Timer 11");
-  assert.equal(d.addShown(), false);
-  assert.equal(d.note(), "All 12 timers are in use. Delete one to add another.");
+  await d.show(states([NIGHT], {
+    [E.session_kwh]: { state: "12.345", attributes: {} },
+    [E.session_cost]: { state: "1.5", attributes: { unit_of_measurement: "GBP" } },
+  }));
+  assert.equal(d.summary("power"), "This session: 12.35 kWh · £1.50");
+  await d.show(states([NIGHT], { [E.session_cost]: { state: "2", attributes: { unit_of_measurement: "SEK" } } }));
+  assert.equal(d.summary("power"), "This session: 0.00 kWh · 2.00 SEK");
+  assert.deepEqual(d.cards("power").map((c) => [c.config.type, c.config.entity]), [["sensor", E.power], ["tile", E.session_kwh], ["tile", E.session_cost]]);
 });
-
-test("no timers yet", async () => {
-  const d = await setup();
-  // Empty slots report 0, or nothing at all.
-  await d.show(states(4, {}, { [`number.${C}_charge_schedule_2_current`]: { state: "unknown", attributes: {} } }));
-  assert.deepEqual(d.titles(), ["Now", "When to charge", "Power"]);
-  assert.equal(d.note(), "No timers yet.");
-  assert.equal(d.addShown(), true);
-});
-
-test("the charger not answering", async () => {
-  const d = await setup({ stored: { collapsed: ["timer_1"] } });
-  await d.show(states(4, { 1: NIGHT }));
-  const gone = states(4, {});
-  for (const id of Object.keys(gone)) if (id.includes(C)) gone[id] = { state: "unavailable", attributes: {} };
-  await d.show(gone);
-  assert.deepEqual(d.titles(), ["Now", "When to charge", "Power"]);
-  assert.equal(d.note(), "The charger isn't answering.");
-  assert.equal(d.addShown(), false);
-  // Back again, its timer is folded as it was.
-  await d.show(states(4, { 1: NIGHT }));
-  assert.equal(d.block("timer_1").classList.contains("collapsed"), true);
-  assert.equal(d.saved.length, 0);
-});
-
-test("a charger with no timers at all", async () => {
-  const d = await setup();
-  await d.show(states(0, {}));
-  assert.equal(d.note(), "The charger has no timers.");
-  assert.equal(d.addShown(), false);
-});
-
-// ---- Folding ------------------------------------------------------------------
 
 test("tapping a heading folds its block, and that's saved", async () => {
   const d = await setup();
-  await d.show(states(4, { 1: NIGHT }));
+  await d.show(states([NIGHT]));
   const power = d.block("power");
-  assert.equal(power.querySelector(".head").getAttribute("aria-expanded"), "true");
   power.querySelector(".head").click();
   assert.equal(power.classList.contains("collapsed"), true);
   assert.equal(power.querySelector(".head").getAttribute("aria-expanded"), "false");
-  assert.equal(d.block("timer_1").classList.contains("collapsed"), false);
   assert.deepEqual(d.saved.at(-1), { type: "frontend/set_user_data", key: "eo_lite_charger", value: { collapsed: ["power"] } });
-  // Enter on the heading opens it again.
   power.querySelector(".head").dispatchEvent(new d.window.KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
   assert.equal(power.classList.contains("collapsed"), false);
-  assert.deepEqual(d.saved.at(-1).value, { collapsed: [] });
 });
 
 test("tapping Charger folds the whole card", async () => {
   const d = await setup();
-  await d.show(states(4, { 1: NIGHT }));
-  d.root.querySelector(".card-head").click();
-  assert.equal(d.root.querySelector(".card").classList.contains("folded"), true);
-  assert.equal(d.root.querySelector(".card-head").getAttribute("aria-expanded"), "false");
+  await d.show(states([NIGHT]));
+  d.$(".card-head").click();
+  assert.equal(d.$(".card").classList.contains("folded"), true);
   assert.deepEqual(d.saved.at(-1).value, { collapsed: ["all"] });
 });
 
 test("opens as each person left it", async () => {
-  const d = await setup({ stored: { collapsed: ["timer_3", 7, "power"] } });
-  await d.show(states(4, { 1: NIGHT, 3: NOON }));
-  assert.deepEqual(d.blocks().filter((b) => b.classList.contains("collapsed")).map((b) => b.dataset.id), ["timer_3", "power"]);
-  assert.equal(d.root.querySelector(".card").classList.contains("folded"), false);
-});
-
-test("a deleted timer's slot starts open for the next one", async () => {
-  const d = await setup({ stored: { collapsed: ["timer_1"] } });
-  await d.show(states(4, { 1: NIGHT, 3: NOON }));
-  assert.equal(d.block("timer_1").classList.contains("collapsed"), true);
-  await d.show(states(4, { 3: NOON }));
-  assert.deepEqual(d.saved.at(-1).value, { collapsed: [] });
-  await d.show(states(4, { 1: NOON, 3: NOON }));
-  assert.equal(d.block("timer_1").classList.contains("collapsed"), false);
+  const d = await setup({ stored: { collapsed: ["timer_2", 7, "power"] } });
+  await d.show(states([NIGHT, PEAK]));
+  assert.deepEqual(d.blocks().filter((b) => b.classList.contains("collapsed")).map((b) => b.dataset.id), ["timer_2", "power"]);
 });
 
 test("other things changing around the house don't redraw it", async () => {
   const d = await setup();
-  const s = states(4, { 1: NIGHT });
+  const s = states([NIGHT]);
   await d.show(s);
-  const line = d.block("timer_1").querySelector(".summary");
-  line.textContent = "untouched";
+  const heading = d.block("timer_1").querySelector(".summary");
+  heading.textContent = "untouched";
   await d.show({ ...s, "light.kitchen": { state: "off", attributes: {} } });
-  assert.equal(line.textContent, "untouched");
+  assert.equal(heading.textContent, "untouched");
 });
 
 // ---- Adding the dashboard -------------------------------------------------------
@@ -398,7 +425,6 @@ test("an admin's browser adds the Charger dashboard", async () => {
 });
 
 test("the dashboard isn't added twice, or by someone who isn't an admin, or when it's turned off", async () => {
-  // One of EO-Lite's is already there.
   let p = pageHass({ dashboards: [{ url_path: "ev" }], configs: { ev: { strategy: { type: "custom:eo-lite" } } } });
   page({ page: p.hass });
   await tick(); await tick(); await tick();
@@ -414,7 +440,6 @@ test("the dashboard isn't added twice, or by someone who isn't an admin, or when
 });
 
 test("a dashboard already at /charger is left alone, and a failure gives the claim back", async () => {
-  // The dashboard that was there before EO-Lite, with its own cards.
   let p = pageHass({ dashboards: [{ url_path: "charger" }], configs: { charger: { views: [] } } });
   page({ page: p.hass });
   await tick(); await tick(); await tick();

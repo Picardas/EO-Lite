@@ -51,7 +51,8 @@ node tests/dashboard.test.js
 
 - **Keep it like Hue-Lite: simple and decoupled.** Prefer fewer settings,
   and one clear behaviour over options. The dashboard's blocks, headings and
-  folding copy Hue-Lite's routines card: keep them looking alike.
+  folding copy Hue-Lite's routines card, and the status card its light
+  bars (the round icon, the colours): keep them looking alike.
 - **Behaviour lives in Python.** The dashboard shows state and calls actions
   and websocket commands; it decides nothing itself.
 - **Every behaviour change has a test.** Tests describe what happens from

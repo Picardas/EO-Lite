@@ -2,8 +2,9 @@
 <!--
   Screenshots for the README: the dashboard script with a mock hass, real
   Material Design icons (from jsDelivr) and Home Assistant's card look.
-  ?scene=timers|charging|off|full says what the charger's doing, &folded=a,b
-  folds blocks (now, when, power, timer_1, …), &phone lays it out at a
+  ?scene=timers|charging|off|full says what the charger's doing, &time=HH:MM
+  the time of day, &folded=a,b
+  folds blocks (power, timer_1, …), &phone lays it out at a
   phone's width and &dark uses the dark theme. AGENTS.md says how to take them.
 -->
 <html lang="en">
@@ -28,9 +29,41 @@
     .sections { max-width: 1500px; margin: 0 auto; }
   </style>
   <script>
+    // The time of day the dashboard sees (?time=HH:MM, 20:15 by default), so the screenshots don't change with it.
+    {
+      const [h, m] = (new URLSearchParams(location.search).get("time") || "20:15").split(":").map(Number);
+      const fixed = new Date(2026, 10, 18, h, m).getTime();
+      const RealDate = Date;
+      window.Date = class extends RealDate {
+        constructor(...args) { super(...(args.length ? args : [fixed])); }
+        static now() { return fixed; }
+      };
+    }
     window.errors = [];
     addEventListener("error", (e) => window.errors.push(`${e.message} @${e.lineno}`));
     addEventListener("unhandledrejection", (e) => window.errors.push(String(e.reason)));
+    // Home Assistant's card and switch, as they look.
+    customElements.define("ha-card", class extends HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML = `<style>:host { display: block; background: var(--card-background-color);
+          border-radius: 12px; border: 1px solid var(--divider-color); box-sizing: border-box; }</style><slot></slot>`;
+      }
+    });
+    customElements.define("ha-switch", class extends HTMLElement {
+      constructor() {
+        super();
+        this.attachShadow({ mode: "open" }).innerHTML = `<style>
+          :host { display: inline-block; position: relative; width: 36px; height: 14px; margin-right: 4px; border-radius: 7px;
+                  background: rgba(var(--rgb-primary-text-color), 0.38); }
+          :host([checked]) { background: rgba(var(--rgb-primary-color), 0.5); }
+          .thumb { position: absolute; top: -3px; left: -2px; width: 20px; height: 20px; border-radius: 50%; background: #fafafa;
+                   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
+          :host([checked]) .thumb { left: 18px; background: var(--primary-color); }</style><div class="thumb"></div>`;
+      }
+      set checked(on) { this.toggleAttribute("checked", Boolean(on)); }
+      get checked() { return this.hasAttribute("checked"); }
+    });
     // ha-icon is defined once the icons have loaded (see below); the elements already there upgrade then.
     window.iconsLoaded = new Promise((resolve) => { window.iconsReady = resolve; });
     window.missingIcons = new Set();
@@ -71,12 +104,13 @@
     const C = "openeo_charger";
     const NIGHT = ["23:30:00", "05:30:00", 32];
     const PEAK = ["16:00:00", "19:00:00", 6];
-    // What the charger's doing in each scene: its timers ({slot: [from, until, amps]}), the toggles, and the session.
+    // What the charger's doing in each scene: its timers ([from, until, amps], from timer 1), the toggles, and the session.
+    // openeo always has at least one timer.
     const SCENES = {
-      timers: { timers: { 1: NIGHT, 2: PEAK }, allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
-      charging: { timers: { 1: NIGHT, 2: PEAK }, allow: "on", only: "off", connected: "on", charging: "on", state: "charging", kw: 7.2, amps: 31.4, kwh: 12.35, cost: 1.5 },
-      off: { timers: {}, allow: "off", only: "off", connected: "off", charging: "off", state: "idle", kw: 0, amps: 0, kwh: 0, cost: 0 },
-      full: { timers: { 1: NIGHT, 2: PEAK, 3: ["12:00:00", "14:00:00", 16], 4: ["02:00:00", "04:00:00", 20] }, allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
+      timers: { timers: [NIGHT, PEAK], allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
+      charging: { timers: [NIGHT, PEAK], allow: "on", only: "off", connected: "on", charging: "on", state: "charging", kw: 7.2, amps: 31.4, kwh: 12.35, cost: 1.5 },
+      off: { timers: [NIGHT], allow: "off", only: "off", connected: "off", charging: "off", state: "idle", kw: 0, amps: 0, kwh: 0, cost: 0 },
+      full: { timers: [NIGHT, PEAK, ["12:00:00", "14:00:00", 16], ["02:00:00", "04:00:00", 20]], allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
     };
     const now = SCENES[scene];
 
@@ -93,16 +127,15 @@
       entity(`sensor.${C}_session_cost`, now.cost.toFixed(2), { unit_of_measurement: "GBP" }),
       entity(`button.${C}_add_charge_schedule`, "unknown"),
     ];
-    // The charger's integration has four timer slots.
-    for (let n = 1; n <= 4; n++) {
-      const [start, end, amps] = now.timers[n] || ["00:00:00", "00:00:00", 0];
+    now.timers.forEach(([start, end, amps], i) => {
+      const n = i + 1;
       list.push(
         entity(`number.${C}_charge_schedule_${n}_current`, amps, { unit_of_measurement: "A" }),
         entity(`time.${C}_charge_schedule_${n}_start`, start),
         entity(`time.${C}_charge_schedule_${n}_end`, end),
         entity(`button.${C}_delete_charge_schedule_${n}`, "unknown"),
       );
-    }
+    });
     const states = Object.fromEntries(list.map((s) => [s.entity_id, s]));
 
     // What EO-Lite tells the dashboard (dashboard.websocket_config).

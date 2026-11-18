@@ -31,9 +31,13 @@ from homeassistant.const import (
 )
 from homeassistant.core import Event, EventStateChangedData, HomeAssistant, State, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.device_registry import DeviceEntryType, DeviceInfo
+from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.helpers.storage import Store
+
+from . import charger as charger_lookup
 
 from .const import (
     ALLOW_CHARGING,
@@ -45,12 +49,14 @@ from .const import (
     STORAGE_KEY,
     STORAGE_VERSION,
     SWITCHES,
-    charger_entities,
 )
 
 _LOGGER = logging.getLogger(__name__)
 
 type EoLiteConfigEntry = ConfigEntry[EoLite]
+
+# Sent (with the EoLite) when the charger's entities or timers change, for the dashboards open.
+SIGNAL_CHARGER = f"{DOMAIN}_charger"
 
 # How long after a change before it's written to disk.
 SAVE_DELAY = 1
@@ -88,7 +94,8 @@ class EoLite:
         self.hass = hass
         self.entry = entry
         self.charger: str = entry.data[CONF_CHARGER]
-        self.charger_entities = charger_entities(self.charger)
+        # The charger's entities EO-Lite uses, and its timers (see charger.py).
+        self.charger_entities, self.timers = charger_lookup.find(hass, self.charger)
         self.charging_switch = self.charger_entities["charging_switch"]
         self.timers_switch = self.charger_entities["timers_switch"]
         # Each toggle: on, off, or None until the charger's first seen (they
@@ -136,6 +143,17 @@ class EoLite:
             self._catch_up()
         else:
             self._stop.append(self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STARTED, self._catch_up))
+        # A timer added or deleted on the charger: its entities come and go.
+        self._stop.append(self.hass.bus.async_listen(er.EVENT_ENTITY_REGISTRY_UPDATED, self._registry_changed))
+        # Dashboards open since before a reload are told again.
+        async_dispatcher_send(self.hass, SIGNAL_CHARGER, self)
+
+    @callback
+    def _registry_changed(self, _: Event) -> None:
+        entities, timers = charger_lookup.find(self.hass, self.charger)
+        if (entities, timers) != (self.charger_entities, self.timers):
+            self.charger_entities, self.timers = entities, timers
+            async_dispatcher_send(self.hass, SIGNAL_CHARGER, self)
 
     @callback
     def async_stop(self) -> None:

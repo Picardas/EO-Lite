@@ -16,6 +16,7 @@ one plain JavaScript file with no build step.
 | ---- | ------------ |
 | `custom_components/eo_lite/engine.py` | The core: the two toggles, stored data (`_stored` checks everything loaded), and setting the charger's switches from them |
 | `const.py` | Names, and `charger_entities`: the charger integration's entity ids EO-Lite uses |
+| `charger.py` | Finding the charger's entities and timers in the entity registry by openeo's own ids, whatever Home Assistant names them |
 | `switch.py` | The toggles' entities |
 | `dashboard.py` | Serves the script; the websocket commands the dashboard uses |
 | `config_flow.py`, `__init__.py` | Setup |

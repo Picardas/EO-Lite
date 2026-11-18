@@ -108,7 +108,19 @@ async function setup(options) {
   const card = window.document.createElement("eo-lite-charger");
   card.setConfig(config);
   window.document.body.appendChild(card);
-  const show = async (s) => { card.hass = { states: s, callWS, callService }; await tick(); await tick(); };
+  // EO-Lite's subscription, when `live` is given: `push` sends it a message.
+  const live = { subscribed: [], stopped: 0, push: null };
+  const connection = {
+    subscribeMessage(callback, msg) {
+      live.subscribed.push(msg);
+      live.push = async (message) => { callback(message); await tick(); };
+      return Promise.resolve(() => { live.stopped += 1; });
+    },
+  };
+  const show = async (s) => {
+    card.hass = { states: s, callWS, callService, ...(options?.live ? { connection } : {}) };
+    await tick(); await tick();
+  };
   const root = card.shadowRoot;
   const $ = (sel) => root.querySelector(sel);
   const blocks = () => [...root.querySelectorAll(".block")];
@@ -121,7 +133,7 @@ async function setup(options) {
   const line = () => `${$(".top .name").textContent} · ${$(".top .state").textContent}`;
   // Each stretch on the strip as [from, width], in percent of the day.
   const spans = () => [...root.querySelectorAll(".track .span")].map((s) => [parseFloat(s.style.left), parseFloat(s.style.width)]);
-  return { window, dashboard: plain(dashboard), config: plain(config), card, root, $, show, blocks, block, titles, summary, cards, shown, note, line, spans, saved, services };
+  return { window, dashboard: plain(dashboard), config: plain(config), card, root, $, show, blocks, block, titles, summary, cards, shown, note, line, spans, saved, services, live };
 }
 
 const NIGHT = ["23:30:00", "05:30:00", 32];
@@ -281,12 +293,12 @@ test("every timer the charger has gets a block, with its times and current on th
   assert.equal(d.summary("timer_1"), "--:--–05:30 · 20 A");
 });
 
-test("each timer's block holds its settings, and Delete while there's more than one", async () => {
+test("each timer's block holds its settings, and Delete unless it's the only one and the charger's default", async () => {
   const d = await setup();
-  await d.show(states([NIGHT]));
+  await d.show(states([["22:00:00", "06:00:00", 16]]));
   const rows = (n) => plain(d.cards(`timer_${n}`)[0].config).entities;
   const [settings] = d.cards("timer_1");
-  // The only timer can't be deleted (the charger would put it back to 22:00–06:00).
+  // The only timer, at the charger's default, can't be deleted: the charger would only put it back.
   assert.deepEqual(rows(1).map((r) => [r.entity, r.name]), [
     [`time.${C}_charge_schedule_1_start`, "From"],
     [`time.${C}_charge_schedule_1_end`, "Until"],
@@ -305,8 +317,11 @@ test("each timer's block holds its settings, and Delete while there's more than 
   assert.equal(add.tap_action.target.entity_id, E.add_timer);
   // The cards inside are handed hass.
   assert.ok(settings.hass.states["light.kitchen"]);
-  // Back to one: Delete goes again.
+  // Back to one, of your own: Delete resets it, and says so.
   await d.show(states([NIGHT]));
+  assert.equal(rows(1).at(-1).tap_action.confirmation.text, "Timer 1 is the only one, so the charger keeps it, back at 22:00–06:00 at 16 A. Reset it?");
+  // Reset: Delete goes again.
+  await d.show(states([["22:00:00", "06:00:00", 16]]));
   assert.equal(rows(1).length, 3);
 });
 
@@ -345,6 +360,88 @@ test("deleting a timer moves the later ones up, and the last one's block goes", 
   assert.equal(d.summary("timer_2"), "12:00–14:00 · 10 A");
   // Timer 3's folded state is forgotten, so a new timer 3 starts open.
   assert.deepEqual(d.saved.at(-1).value, { collapsed: [] });
+});
+
+
+// ---- Timers by openeo's ids ----------------------------------------------------------
+
+// Timer n's entities as Home Assistant names them once the charger's in an area.
+const garden = (n) => ({
+  n,
+  current: `number.front_garden_openeo_charger_charge_schedule_${n}_current`,
+  start: `time.front_garden_openeo_charger_charge_schedule_${n}_start`,
+  end: `time.front_garden_openeo_charger_charge_schedule_${n}_end`,
+  remove: `button.front_garden_openeo_charger_delete_charge_schedule_${n}`,
+});
+const plainTimer = (n) => ({
+  n,
+  current: `number.${C}_charge_schedule_${n}_current`,
+  start: `time.${C}_charge_schedule_${n}_start`,
+  end: `time.${C}_charge_schedule_${n}_end`,
+  remove: `button.${C}_delete_charge_schedule_${n}`,
+});
+// States for these timers ({n, current, start, end}: entity ids, with [start, end, amps]).
+function liveStates(timers, extra = {}) {
+  const s = states([], extra);
+  for (const [t, [start, end, amps]] of timers) {
+    s[t.current] = { state: String(amps), attributes: { unit_of_measurement: "A" } };
+    s[t.start] = { state: start, attributes: {} };
+    s[t.end] = { state: end, attributes: {} };
+    s[t.remove] = { state: "unknown", attributes: {} };
+  }
+  return s;
+}
+const DEFAULT = { start: "22:00", end: "06:00", amps: 16 };
+
+test("timers Home Assistant named after the charger's area show up", async () => {
+  const d = await setup({ live: true });
+  const timers = [[plainTimer(1), NIGHT], [garden(2), PEAK], [garden(3), ["22:00:00", "06:00:00", 16]]];
+  await d.show(liveStates(timers));
+  assert.deepEqual(plain(d.live.subscribed), [{ type: "eo_lite/subscribe" }]);
+  await d.live.push({ entities: SETUP.entities, timers: timers.map(([t]) => t), default_timer: DEFAULT });
+  assert.deepEqual(d.titles(), ["Timer 1", "Timer 2", "Timer 3", "Power"]);
+  assert.equal(d.summary("timer_2"), "16:00–19:00 · 6 A");
+  const rows = plain(d.cards("timer_2")[0].config).entities;
+  assert.equal(rows[0].entity, "time.front_garden_openeo_charger_charge_schedule_2_start");
+  assert.equal(rows.at(-1).tap_action.target.entity_id, "button.front_garden_openeo_charger_delete_charge_schedule_2");
+  // Each can be deleted, as there are several.
+  assert.equal(plain(d.cards("timer_3")[0].config).entities.at(-1).name, "Delete this timer");
+});
+
+test("a timer added on the charger appears as EO-Lite says, and a deleted one goes", async () => {
+  const d = await setup({ live: true });
+  let timers = [[plainTimer(1), NIGHT]];
+  await d.show(liveStates(timers));
+  await d.live.push({ entities: SETUP.entities, timers: timers.map(([t]) => t), default_timer: DEFAULT });
+  assert.deepEqual(d.titles(), ["Timer 1", "Power"]);
+  // New timer pressed: its entities arrive, then EO-Lite says which they are.
+  timers = [...timers, [garden(2), ["22:00:00", "06:00:00", 16]]];
+  await d.show(liveStates(timers));
+  assert.deepEqual(d.titles(), ["Timer 1", "Power"]);
+  await d.live.push({ entities: SETUP.entities, timers: timers.map(([t]) => t), default_timer: DEFAULT });
+  assert.deepEqual(d.titles(), ["Timer 1", "Timer 2", "Power"]);
+  assert.equal(d.summary("timer_2"), "22:00–06:00 · 16 A");
+  // Deleted: gone.
+  timers = timers.slice(0, 1);
+  await d.live.push({ entities: SETUP.entities, timers: timers.map(([t]) => t), default_timer: DEFAULT });
+  await d.show(liveStates(timers));
+  assert.deepEqual(d.titles(), ["Timer 1", "Power"]);
+});
+
+test("the charger's entities follow EO-Lite, and the subscription stops when the card goes", async () => {
+  const d = await setup({ live: true });
+  const renamed = { ...SETUP.entities, add_timer: "button.front_garden_add_charge_schedule" };
+  const s = liveStates([[plainTimer(1), NIGHT]]);
+  delete s[E.add_timer];
+  s["button.front_garden_add_charge_schedule"] = { state: "unknown", attributes: {} };
+  await d.show(s);
+  // Before EO-Lite says, the add button isn't found, so New timer can't show.
+  assert.equal(d.shown(".add"), false);
+  await d.live.push({ entities: renamed, timers: [plainTimer(1)], default_timer: DEFAULT });
+  assert.equal(d.shown(".add"), true);
+  d.card.remove();
+  await tick();
+  assert.equal(d.live.stopped, 1);
 });
 
 // ---- Power and folding -----------------------------------------------------------

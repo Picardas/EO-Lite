@@ -17,12 +17,15 @@
 //
 // The timers are the charger's: openeo publishes entities for each timer it
 // has (<n> is its place in the list, from 1), and nothing for timers it
-// hasn't. It always keeps at least one.
+// hasn't. It always keeps at least one: deleting the last puts it back to
+// 22:00–06:00 at 16 A. Deleting one moves the later timers up a number.
+// EO-Lite finds their entities by openeo's own ids (websocket
+// `eo_lite/subscribe`), as Home Assistant may name them after the charger's
+// area. For a charger it can't find that way, they're found by name:
 //   number.<charger>_charge_schedule_<n>_current
 //   time.<charger>_charge_schedule_<n>_start
 //   time.<charger>_charge_schedule_<n>_end
-//   button.<charger>_delete_charge_schedule_<n>   later timers move up a number
-//   button.<charger>_add_charge_schedule          adds one (22:00–06:00, 16 A)
+//   button.<charger>_delete_charge_schedule_<n>
 
 (() => {
   const DOMAIN = "eo_lite";
@@ -262,7 +265,9 @@
       if (config.more !== undefined && !Array.isArray(config.more)) throw new Error("more must be a list of blocks");
       this._config = config;
       this._charger = config.charger;
-      this._entities = config.entities || {};
+      // The charger's entities and timers, kept up to date by EO-Lite once
+      // the card's subscribed; until then, from the config, and by name.
+      this._entities = { ...(config.entities || {}), ...(this._live?.entities || {}) };
       this._layout = this._layout || { collapsed: [] };
       this._root = this._root || this.attachShadow({ mode: "open" });
       // The blocks by id, and each timer's by its number.
@@ -278,10 +283,34 @@
       this._hass = hass;
       if (!this._config) return;
       if (!this._loaded) this._load();
+      if (this.isConnected) this._subscribe();
       // The cards inside skip redrawing themselves when their own states haven't changed.
       for (const el of [...this._blocks.values(), ...this._timers.values()]) for (const card of el.cards) card.hass = hass;
       for (const card of this._addCards) card.hass = hass;
       this._update();
+    }
+
+    connectedCallback() {
+      if (this._hass && this._config) this._subscribe();
+    }
+
+    disconnectedCallback() {
+      const unsubscribe = this._unsubscribe;
+      this._unsubscribe = null;
+      unsubscribe?.then((stop) => stop()).catch(() => {});
+    }
+
+    // EO-Lite says which entities are the charger's timers, now and as
+    // they're added and deleted.
+    _subscribe() {
+      if (this._unsubscribe || !this._hass.connection?.subscribeMessage) return;
+      this._unsubscribe = this._hass.connection.subscribeMessage((live) => {
+        this._live = live;
+        this._entities = { ...(this._config.entities || {}), ...(live.entities || {}) };
+        this._seen = null;
+        this._update();
+      }, { type: `${DOMAIN}/subscribe` });
+      this._unsubscribe.catch(() => { this._unsubscribe = null; });
     }
 
     getCardSize() {
@@ -314,6 +343,8 @@
 
     // A timer's entities.
     _ids(n) {
+      const live = this._live?.timers?.find((t) => String(t.n) === n);
+      if (live) return { current: live.current, start: live.start, end: live.end, remove: live.remove };
       const c = this._charger;
       return {
         current: `number.${c}_charge_schedule_${n}_current`,
@@ -325,6 +356,7 @@
 
     // Every timer the charger has, in order.
     _numbers() {
+      if (Array.isArray(this._live?.timers)) return this._live.timers.map((t) => String(t.n));
       const start = `number.${this._charger}_charge_schedule_`;
       const end = "_current";
       const found = [];
@@ -441,8 +473,9 @@
       return el;
     }
 
-    // A timer's settings: its times and current, and deleting it (not while
-    // it's the only one: the charger would only put it back to 22:00–06:00).
+    // A timer's settings: its times and current, and deleting it (`deletable`:
+    // `alone` when it's the only one, which the charger puts back to its
+    // default rather than deleting).
     _timerCard(n, deletable) {
       const ids = this._ids(n);
       const rows = [
@@ -460,7 +493,11 @@
             action: "perform-action",
             perform_action: "button.press",
             target: { entity_id: ids.remove },
-            confirmation: { text: `Delete timer ${n}? The timers after it move up a number.` },
+            confirmation: {
+              text: deletable === "alone"
+                ? `Timer ${n} is the only one, so the charger keeps it, back at ${this._defaultText()}. Reset it?`
+                : `Delete timer ${n}? The timers after it move up a number.`,
+            },
           },
         });
       }
@@ -521,7 +558,7 @@
         const ids = this._ids(n);
         return { n, start: minutes(hass, ids.start), end: minutes(hass, ids.end), amps: number(hass, ids.current), unit: unitOf(hass, ids.current) || "A" };
       });
-      this._updateTimers(numbers);
+      this._updateTimers(timers);
       this._updateStatus(timers);
 
       // Each timer's times and current on its heading, and each block's summary.
@@ -544,9 +581,31 @@
       this._el.add.hidden = !answers;
     }
 
+    // The timer openeo adds, and leaves when the last one's deleted.
+    get _default() {
+      const d = this._live?.default_timer || { start: "22:00", end: "06:00", amps: 16 };
+      const mins = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
+      return { start: mins(d.start), end: mins(d.end), amps: d.amps };
+    }
+
+    _defaultText() {
+      const d = this._default;
+      return `${clockOf(d.start)}–${clockOf(d.end)} at ${d.amps} A`;
+    }
+
+    // Whether a timer can be deleted: while there are others, and the only
+    // one too unless it's just the charger's default (deleting it would
+    // change nothing).
+    _deletable(t, timers) {
+      if (timers.length > 1) return true;
+      const d = this._default;
+      return t.start === d.start && t.end === d.end && t.amps === d.amps ? false : "alone";
+    }
+
     // A block for each timer. Ones still there stay as they are, so a timer
     // that's being edited isn't disturbed.
-    _updateTimers(numbers) {
+    _updateTimers(timers) {
+      const numbers = timers.map((t) => t.n);
       let forgot = false;
       for (const [n, el] of this._timers) {
         if (numbers.includes(n)) continue;
@@ -559,23 +618,24 @@
         }
       }
       if (forgot && this._layoutLoaded) saveLayout(this._hass, this._layoutKey, this._layout);
-      const deletable = numbers.length > 1;
-      for (const n of numbers) {
+      for (const t of timers) {
+        const n = t.n;
         if (this._timers.has(n)) continue;
-        const el = this._timerBlock(n, deletable);
+        const el = this._timerBlock(n, this._deletable(t, timers));
         this._timers.set(n, el);
         const next = numbers.find((m) => Number(m) > Number(n) && this._timers.has(m));
         this._el.list.insertBefore(el, next ? this._timers.get(next) : this._el.after);
       }
-      // Delete shows while there's more than one timer: a timer's card is
-      // made again when that changes.
-      for (const [n, el] of this._timers) {
+      // A timer's card is made again when whether it can be deleted changes.
+      for (const t of timers) {
+        const el = this._timers.get(t.n);
+        const deletable = this._deletable(t, timers);
         if (el.deletable === deletable) continue;
         el.deletable = deletable;
         const body = el.querySelector(".body");
         body.replaceChildren();
         el.cards = [];
-        this._fill(this._rendering, body, el.cards, [this._timerCard(n, deletable)]);
+        this._fill(this._rendering, body, el.cards, [this._timerCard(t.n, deletable)]);
       }
       this._arrange();
     }

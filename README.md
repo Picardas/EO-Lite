@@ -83,10 +83,11 @@ dashboard:
   means. While only the timers decide, a strip shows the day's timers with
   now marked.
 - **Timer 1, 2, …**: a block for each timer, with its times and its own
-  charge current (a low one for slow charging at peak times, say). Delete
-  shows while there's more than one: the charger always keeps one, and
-  deleting a timer moves the later ones up a number. **New timer** adds one
-  (22:00–06:00 at 16 A, the charger's default). There's no limit.
+  charge current (a low one for slow charging at peak times, say), and
+  Delete. The charger always keeps one timer: deleting the last puts it
+  back to 22:00–06:00 at 16 A, so a lone timer that's already that has no
+  Delete. Deleting a timer moves the later ones up a number. **New timer**
+  adds one at 22:00–06:00 and 16 A. There's no limit.
 - **Power**: power now, and this session's energy and cost.
 
 The timer and power blocks fold away (tap a heading), and each heading sums
@@ -103,10 +104,11 @@ strategy:
 
 ## Limitations
 
-- **The timers are the charger's.** They're openeo's daily time windows
-  (`number.openeo_charger_charge_schedule_<n>_current` and the entities
-  beside it), with no days of the week. A new timer's entities take a few
-  seconds to appear.
+- **The timers are the charger's.** They're openeo's daily time windows,
+  with no days of the week. A new timer's entities take a few seconds to
+  appear. EO-Lite finds them by openeo's own ids, so it doesn't matter
+  what Home Assistant names them (it names new ones after the charger's
+  area, like `number.front_garden_openeo_charger_charge_schedule_2_current`).
 - **The charger's overall current limit** isn't on the dashboard. Charging
   outside the timers uses it as it's set on the charger.
 - **One charger.**

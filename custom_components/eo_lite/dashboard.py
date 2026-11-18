@@ -16,9 +16,11 @@ from homeassistant.components import websocket_api
 from homeassistant.components.frontend import add_extra_js_url, remove_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 
+from .charger import DEFAULT_TIMER
 from .const import DOMAIN
-from .engine import EoLite, async_get_loaded
+from .engine import SIGNAL_CHARGER, EoLite, async_get_loaded
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,7 +42,7 @@ async def async_register(hass: HomeAssistant) -> None:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(URL, str(SCRIPT), True), StaticPathConfig(LOADER_URL, str(LOADER), True)]
     )
-    for command in (websocket_config, websocket_claim_dashboard):
+    for command in (websocket_config, websocket_subscribe, websocket_claim_dashboard):
         websocket_api.async_register_command(hass, command)
 
 
@@ -86,6 +88,35 @@ def websocket_config(hass: HomeAssistant, connection: websocket_api.ActiveConnec
             "add_dashboard": eo_lite.use_dashboard and not eo_lite.dashboard_added,
         },
     )
+
+
+@callback
+def _charger(eo_lite: EoLite) -> dict[str, Any]:
+    """The charger's entities and EO-Lite's, and the charger's timers
+    ({n, current, start, end, remove}: entity ids; None when the dashboard
+    should find them by name), with the timer openeo adds."""
+    return {
+        "entities": {**eo_lite.charger_entities, **eo_lite.entity_ids},
+        "timers": eo_lite.timers,
+        "default_timer": DEFAULT_TIMER,
+    }
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
+@_with_eo_lite
+def websocket_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any], _: EoLite) -> None:
+    """The charger's entities and timers, now and whenever a timer's added
+    or deleted (or EO-Lite reloads)."""
+
+    @callback
+    def send(eo_lite: EoLite | None = None) -> None:
+        # (While it's being set up, it's not loaded yet, so it comes with the signal.)
+        if eo_lite := eo_lite or async_get_loaded(hass):
+            connection.send_message(websocket_api.event_message(msg["id"], _charger(eo_lite)))
+
+    connection.subscriptions[msg["id"]] = async_dispatcher_connect(hass, SIGNAL_CHARGER, send)
+    connection.send_result(msg["id"])
+    send()
 
 
 @websocket_api.websocket_command(

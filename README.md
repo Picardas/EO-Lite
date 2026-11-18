@@ -24,8 +24,8 @@ doesn't talk to the charger itself.
 > [!NOTE]
 > **EO-Lite is vibe-coded.** It was built by prompting an AI coding
 > assistant (Claude Code), not written by hand. It has a test suite that
-> runs on every change, against a stand-in charger. **It hasn't been tried
-> on a real charger yet.**
+> runs on every change, against a stand-in charger, and it's in use with a
+> real OpenEO charger. Still, it's a hobby project: expect rough edges.
 
 ## Installation
 

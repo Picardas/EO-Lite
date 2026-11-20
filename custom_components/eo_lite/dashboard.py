@@ -1,22 +1,22 @@
 """The Charger dashboard: serves its script (a dashboard strategy and its
 card) to every page, and over the websocket tells it how EO-Lite is set up."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 import functools
 import hashlib
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
-import voluptuous as vol
+import probatio as vol
 
 from homeassistant.components import websocket_api
 from homeassistant.components.frontend import add_extra_js_url, remove_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
+from homeassistant.util.hass_dict import HassKey
 
 from .charger import DEFAULT_TIMER
 from .const import DOMAIN
@@ -24,13 +24,16 @@ from .engine import SIGNAL_CHARGER, EoLite, async_get_loaded
 
 _LOGGER = logging.getLogger(__name__)
 
+# EO-Lite's own websocket error code (Home Assistant's are in websocket_api).
+ERR_NOT_LOADED = "not_loaded"
+
 FRONTEND = Path(__file__).parent / "frontend"
 SCRIPT = FRONTEND / "eo-lite.js"
 URL = f"/{DOMAIN}/eo-lite.js"
 # What every page loads: it loads the script, trying again if it doesn't arrive.
 LOADER = FRONTEND / "eo-lite-loader.js"
 LOADER_URL = f"/{DOMAIN}/eo-lite-loader.js"
-DATA_URL = f"{DOMAIN}_dashboard_url"
+DATA_URL: HassKey[str] = HassKey(f"{DOMAIN}_dashboard_url")
 
 
 async def async_register(hass: HomeAssistant) -> None:
@@ -40,7 +43,10 @@ async def async_register(hass: HomeAssistant) -> None:
     content = b"".join([await hass.async_add_executor_job(path.read_bytes) for path in (LOADER, SCRIPT)])
     hass.data[DATA_URL] = f"{LOADER_URL}?v={hashlib.sha256(content).hexdigest()[:8]}"
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(URL, str(SCRIPT), True), StaticPathConfig(LOADER_URL, str(LOADER), True)]
+        [
+            StaticPathConfig(URL, str(SCRIPT), cache_headers=True),
+            StaticPathConfig(LOADER_URL, str(LOADER), cache_headers=True),
+        ]
     )
     for command in (websocket_config, websocket_subscribe, websocket_claim_dashboard):
         websocket_api.async_register_command(hass, command)
@@ -66,7 +72,7 @@ def _with_eo_lite(handler: Handler) -> websocket_api.WebSocketCommandHandler:
     @functools.wraps(handler)
     def command(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
         if (eo_lite := async_get_loaded(hass)) is None:
-            connection.send_error(msg["id"], "not_loaded", "EO-Lite isn't set up")
+            connection.send_error(msg["id"], ERR_NOT_LOADED, "EO-Lite isn't set up")
         else:
             handler(hass, connection, msg, eo_lite)
 
@@ -103,14 +109,16 @@ def _charger(eo_lite: EoLite) -> dict[str, Any]:
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
-@_with_eo_lite
-def websocket_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any], _: EoLite) -> None:
+@callback
+def websocket_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
     """The charger's entities and timers, now and whenever a timer's added
-    or deleted (or EO-Lite reloads)."""
+    or deleted (or EO-Lite reloads). Taken even while EO-Lite isn't set up,
+    so a dashboard open then hears as soon as it is, without asking again."""
 
     @callback
     def send(eo_lite: EoLite | None = None) -> None:
-        # (While it's being set up, it's not loaded yet, so it comes with the signal.)
+        # While EO-Lite is starting it isn't loaded yet, so the signal brings
+        # it; while it isn't set up, nothing's sent.
         if eo_lite := eo_lite or async_get_loaded(hass):
             connection.send_message(websocket_api.event_message(msg["id"], _charger(eo_lite)))
 
@@ -136,5 +144,8 @@ def websocket_claim_dashboard(
     finds one already there); `release` gives the claim back if that failed,
     with the `error`, which goes in the log."""
     if error := msg.get("error"):
-        _LOGGER.warning("Couldn't add the Charger dashboard (it'll be tried again): %s", error)
+        # Control characters become spaces, so the browser's text stays on one log line.
+        _LOGGER.warning(
+            "Couldn't add the Charger dashboard (it'll be tried again): %s", re.sub(r"[\x00-\x1f\x7f]", " ", error)
+        )
     connection.send_result(msg["id"], {"claimed": eo_lite.claim_dashboard(msg["release"])})

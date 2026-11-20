@@ -43,8 +43,13 @@ jobs:
       # The dashboard script must parse (Node comes with the runner).
       - run: node --check custom_components/eo_lite/frontend/eo-lite.js
       - run: node --check custom_components/eo_lite/frontend/eo-lite-loader.js
-      # The dashboard script's tests run in a stand-in browser.
-      - run: npm install --no-save jsdom
+      # The dashboard script's tests run in a stand-in browser: jsdom, at the
+      # versions in package-lock.json, without running any install scripts.
+      - run: npm ci --ignore-scripts
       - run: node tests/dashboard.test.js
+      # Lint, with the rules in pyproject.toml. Ruff is pinned, so a new
+      # release can't fail a push on its own.
+      - run: pip install ruff==0.17.6
+      - run: ruff check .
       - run: pip install -r requirements_test.txt
       - run: pytest

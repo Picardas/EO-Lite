@@ -1,7 +1,5 @@
 """Constants for EO-Lite."""
 
-from __future__ import annotations
-
 from typing import Final
 
 DOMAIN: Final = "eo_lite"
@@ -13,13 +11,20 @@ STORAGE_VERSION: Final = 1
 # The charger: the start of its entity ids (openeo_charger, for
 # switch.openeo_charger_charging and the rest).
 CONF_CHARGER: Final = "charger"
+# openeo's own id for the charger (openeo_charger_1), so it's still found
+# once its entities are renamed. Only ever taken from the entity registry.
+CONF_DEVICE: Final = "device"
+# Whether to add the Charger dashboard.
 CONF_DASHBOARD: Final = "dashboard"
 
-# The two toggles, shown as EO-Lite's switch entities (and on the dashboard).
-# Keys are the entity keys.
+# The two toggles, EO-Lite's switch entities, by key (their translation keys
+# too).
 ALLOW_CHARGING: Final = "allow_charging"
 ONLY_DURING_TIMERS: Final = "only_during_timers"
 SWITCHES: Final = (ALLOW_CHARGING, ONLY_DURING_TIMERS)
+
+# The Repairs issue while neither of the charger's switches can be found.
+ISSUE_CHARGER_NOT_FOUND: Final = "charger_not_found"
 
 
 def charger_entities(charger: str) -> dict[str, str]:

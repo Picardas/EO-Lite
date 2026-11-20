@@ -3,7 +3,7 @@
     "step": {
       "user": {
         "title": "EO-Lite",
-        "description": "An overall Allow charging, an Only during timers that means it, and a Charger dashboard with the charger's timers, for an OpenEO charger that's already in Home Assistant.\n\nThe two toggles start as the charger is now, so setting this up changes nothing by itself.",
+        "description": "An overall Allow charging, an Only during timers that means it, and a Charger dashboard with the charger's timers, for an OpenEO charger that's already in Home Assistant.\n\nThe two toggles start as the charger is now, so setting this up doesn't change when the car charges.",
         "data": {
           "charger": "Charger",
           "dashboard": "Charger dashboard"
@@ -26,6 +26,12 @@
     "switch": {
       "allow_charging": { "name": "Allow charging" },
       "only_during_timers": { "name": "Only during timers" }
+    }
+  },
+  "issues": {
+    "charger_not_found": {
+      "title": "EO-Lite can't find the charger",
+      "description": "Neither of the charger's switches ({charging_switch}, {timers_switch}) is in Home Assistant, so Allow charging and Only during timers can't reach the charger. Check that the OpenEO charger's own integration is set up and working. This goes away by itself once the charger's back."
     }
   }
 }

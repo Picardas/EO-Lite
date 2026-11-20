@@ -1,6 +1,6 @@
 // The dashboard script in a stand-in browser (jsdom), with stand-ins for
 // Home Assistant's cards, storage and websocket.
-//   npm install --no-save jsdom && node tests/dashboard.test.js
+//   npm ci --ignore-scripts && node tests/dashboard.test.js
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -62,8 +62,10 @@ const on = (...ids) => Object.fromEntries(ids.map((id) => [id, { state: "on", at
 
 // A page with the script loaded, its clock at `now` (HH:MM today). `stored`
 // is the folded blocks saved for this person; `page` what the page's own
-// hass answers (for adding the dashboard).
-function page({ stored, page: pageHass, now = "12:00" } = {}) {
+// hass answers (for adding the dashboard). Home Assistant's card helpers
+// arrive once `helpers` resolves (straight away without it), and `refuse`
+// has Home Assistant refuse every action.
+function page({ stored, page: pageHass, now = "12:00", helpers, refuse = false } = {}) {
   const dom = new JSDOM("<!doctype html><body></body>", { runScripts: "outside-only", url: "http://ha.local/charger/charger" });
   const { window } = dom;
   const [h, m] = now.split(":").map(Number);
@@ -73,7 +75,7 @@ function page({ stored, page: pageHass, now = "12:00" } = {}) {
     constructor(...args) { super(...(args.length ? args : [fixed])); }
     static now() { return fixed; }
   };
-  window.loadCardHelpers = async () => ({
+  window.loadCardHelpers = async () => (await helpers, {
     createCardElement(config) {
       const el = window.document.createElement("stub-card");
       el.config = config;
@@ -95,7 +97,11 @@ function page({ stored, page: pageHass, now = "12:00" } = {}) {
     if (msg.type === "frontend/set_user_data") { saved.push(plain(msg)); ws.stored = msg.value; return {}; }
     throw new Error(`unexpected ${msg.type}`);
   };
-  const callService = (domain, service, data, target) => services.push(plain({ domain, service, data, target }));
+  // As Home Assistant's: it answers with a promise, which fails when it refuses.
+  const callService = async (domain, service, data, target) => {
+    services.push(plain({ domain, service, data, target }));
+    if (refuse) throw new Error("Unauthorized");
+  };
   return { window, callWS, callService, saved, services };
 }
 
@@ -109,8 +115,9 @@ async function setup(options) {
   card.setConfig(config);
   window.document.body.appendChild(card);
   // EO-Lite's subscription, when `live` is given: `push` sends it a message.
+  // (Or `connection`, a websocket connection of the test's own.)
   const live = { subscribed: [], stopped: 0, push: null };
-  const connection = {
+  const connection = options?.connection || {
     subscribeMessage(callback, msg) {
       live.subscribed.push(msg);
       live.push = async (message) => { callback(message); await tick(); };
@@ -118,7 +125,7 @@ async function setup(options) {
     },
   };
   const show = async (s) => {
-    card.hass = { states: s, callWS, callService, ...(options?.live ? { connection } : {}) };
+    card.hass = { states: s, callWS, callService, ...(options?.live || options?.connection ? { connection } : {}) };
     await tick(); await tick();
   };
   const root = card.shadowRoot;
@@ -278,6 +285,21 @@ test("the day's timers show on a strip while they decide, with now marked", asyn
   assert.equal(parseFloat(d.$(".track .now").style.left), 25);
 });
 
+test("a toggle Home Assistant refuses goes back to how it is", async () => {
+  // Someone who may not control the charger: Home Assistant refuses their toggles.
+  const d = await setup({ refuse: true });
+  const s = states([NIGHT]);
+  await d.show(s);
+  const allow = d.$(".allow ha-switch");
+  allow.checked = true;
+  allow.dispatchEvent(new d.window.Event("change"));
+  await tick(); await tick();
+  // It shows Allow charging off, as it still is, before anything else changes.
+  assert.equal(d.services.length, 1);
+  assert.equal(allow.checked, false);
+  assert.equal(d.$(".allow .hint").textContent, "The car won't charge, timers included");
+});
+
 // ---- The timers ---------------------------------------------------------------
 
 test("every timer the charger has gets a block, with its times and current on the heading", async () => {
@@ -363,6 +385,22 @@ test("deleting a timer moves the later ones up, and the last one's block goes", 
 });
 
 
+test("a timer that can be deleted once Home Assistant's cards arrive holds one card", async () => {
+  // A slow page: Home Assistant's cards take a while to arrive.
+  let arrive;
+  const d = await setup({ helpers: new Promise((r) => { arrive = r; }) });
+  // One timer, the charger's default: no Delete. Before the cards arrive, a second
+  // timer appears, so the first can now be deleted.
+  await d.show(states([["22:00:00", "06:00:00", 16]]));
+  await d.show(states([["22:00:00", "06:00:00", 16], PEAK]));
+  arrive();
+  await tick(); await tick();
+  // Timer 1 holds its settings once, with Delete.
+  const cards = d.cards("timer_1");
+  assert.equal(cards.length, 1);
+  assert.equal(plain(cards[0].config).entities.at(-1).name, "Delete this timer");
+});
+
 // ---- Timers by openeo's ids ----------------------------------------------------------
 
 // Timer n's entities as Home Assistant names them once the charger's in an area.
@@ -442,6 +480,35 @@ test("the charger's entities follow EO-Lite, and the subscription stops when the
   d.card.remove();
   await tick();
   assert.equal(d.live.stopped, 1);
+});
+
+test("a timer's settings follow its entities as EO-Lite says, not as guessed by name", async () => {
+  const d = await setup({ live: true });
+  // Timer 1's start was renamed. Until EO-Lite says, its entities are guessed by name.
+  const t1 = { ...plainTimer(1), start: "time.garage_timer_start" };
+  await d.show(liveStates([[t1, NIGHT]]));
+  await d.live.push({ entities: SETUP.entities, timers: [t1], default_timer: DEFAULT });
+  // Its settings use the renamed one.
+  const rows = plain(d.cards("timer_1")[0].config).entities;
+  assert.equal(rows[0].entity, "time.garage_timer_start");
+  assert.equal(d.summary("timer_1"), "23:30–05:30 · 32 A");
+});
+
+test("a new timer whose entities arrive one by one ends up with all its settings", async () => {
+  const d = await setup({ live: true });
+  const t1 = plainTimer(1);
+  const t2 = garden(2);
+  const timers = [[t1, NIGHT], [t2, PEAK]];
+  await d.show(liveStates(timers));
+  // openeo's entities for timer 2 are registered one at a time, and EO-Lite says so after each.
+  await d.live.push({ entities: SETUP.entities, timers: [t1, { n: 2, current: t2.current }], default_timer: DEFAULT });
+  await d.live.push({ entities: SETUP.entities, timers: [t1, { n: 2, current: t2.current, start: t2.start }], default_timer: DEFAULT });
+  await d.live.push({ entities: SETUP.entities, timers: [t1, t2], default_timer: DEFAULT });
+  await d.show(liveStates(timers));
+  // Timer 2's card has every one of them.
+  const rows = plain(d.cards("timer_2")[0].config).entities;
+  assert.deepEqual(rows.map((r) => r.entity ?? r.tap_action?.target.entity_id), [t2.start, t2.end, t2.current, t2.remove]);
+  assert.equal(d.cards("timer_2").length, 1);
 });
 
 // ---- Power and folding -----------------------------------------------------------
@@ -545,6 +612,37 @@ test("a dashboard already at /charger is left alone, and a failure gives the cla
   page({ page: p.hass });
   await tick(); await tick(); await tick();
   assert.deepEqual(p.calls.at(-1), { type: "eo_lite/claim_dashboard", release: true, error: "it broke" });
+});
+
+// ---- Names and states stay text -------------------------------------------------
+
+test("hostile names, states and units are shown as text, never as markup", async () => {
+  const X = `"><img src=x onerror="window.pwned=1"><script>window.pwned=1</script>`;
+  const { window } = page();
+  const Card = window.customElements.get("eo-lite-charger");
+  // A hostile charger is refused outright.
+  assert.throws(() => new Card().setConfig({ charger: X, entities: {} }));
+  const card = window.document.createElement("eo-lite-charger");
+  card.setConfig({ charger: C, entities: E, more: [{ id: X, name: X, icon: X, cards: [] }] });
+  window.document.body.appendChild(card);
+  const hostile = (state, unit) => ({ state, attributes: { unit_of_measurement: unit, friendly_name: X } });
+  card.hass = {
+    states: {
+      ...states([]),
+      [E.state]: hostile(X), [E.power]: hostile(X, X), [E.session_cost]: hostile("1", X), [E.session_kwh]: hostile(X),
+      [E.allow_charging]: hostile("on"), [E.only_during_timers]: hostile("on"), [E.charging_active]: hostile("on"),
+      [E.vehicle_connected]: hostile("on"), [E.add_timer]: hostile(X),
+      [`number.${C}_charge_schedule_1_current`]: hostile(X, X), [`time.${C}_charge_schedule_1_start`]: hostile(X),
+      [`time.${C}_charge_schedule_1_end`]: hostile("06:00:00"),
+    },
+    callWS: async () => ({}),
+    callService: async () => {},
+  };
+  await tick(); await tick();
+  const root = card.shadowRoot;
+  assert.equal(root.querySelectorAll("img, script").length, 0);
+  assert.equal(window.pwned, undefined);
+  assert.ok(root.textContent.includes("<img"), "hostile text is shown as text");
 });
 
 (async () => {

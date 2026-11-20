@@ -1,11 +1,9 @@
 """Setup asks two things: which charger, and whether to add the Charger
 dashboard."""
 
-from __future__ import annotations
-
 from typing import Any
 
-import voluptuous as vol
+import probatio as vol
 
 from homeassistant.config_entries import ConfigFlow, ConfigFlowResult
 from homeassistant.core import HomeAssistant, callback
@@ -18,7 +16,8 @@ from homeassistant.helpers.selector import (
     SelectSelectorMode,
 )
 
-from .const import CONF_CHARGER, CONF_DASHBOARD, DOMAIN, NAME, charger_entities
+from . import charger as charger_lookup
+from .const import CONF_CHARGER, CONF_DASHBOARD, CONF_DEVICE, DOMAIN, NAME, charger_entities
 
 
 @callback
@@ -40,15 +39,20 @@ def chargers(hass: HomeAssistant) -> dict[str, str]:
 
 class EoLiteConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
+    # Minor version 2 remembers openeo's id for the charger (see async_migrate_entry).
+    MINOR_VERSION = 2
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         found = chargers(self.hass)
         if not found:
             return self.async_abort(reason="no_charger")
         if user_input is not None:
+            data = {CONF_CHARGER: user_input[CONF_CHARGER]}
+            if device := charger_lookup.device_id(self.hass, user_input[CONF_CHARGER]):
+                data[CONF_DEVICE] = device
             return self.async_create_entry(
                 title=NAME,
-                data={CONF_CHARGER: user_input[CONF_CHARGER]},
+                data=data,
                 options={CONF_DASHBOARD: user_input[CONF_DASHBOARD]},
             )
         schema = vol.Schema(

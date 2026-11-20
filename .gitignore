@@ -5,3 +5,5 @@ __pycache__/
 .venv/
 venv/
 node_modules/
+.ruff_cache/
+.DS_Store

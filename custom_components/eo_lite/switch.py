@@ -1,19 +1,22 @@
 """The two toggles: Allow charging, and Only during timers."""
 
-from __future__ import annotations
-
 from typing import Any
 
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.exceptions import Unauthorized, UnknownUser
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .const import SWITCHES
 from .engine import EoLite, EoLiteConfigEntry
 
+# Nothing polls, so Home Assistant needn't limit parallel updates.
+PARALLEL_UPDATES = 0
+
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry: EoLiteConfigEntry, async_add_entities: AddEntitiesCallback
+    hass: HomeAssistant, entry: EoLiteConfigEntry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
     async_add_entities(Toggle(entry.runtime_data, key) for key in SWITCHES)
 
@@ -42,7 +45,21 @@ class Toggle(SwitchEntity):
         return self.eo_lite.settings[self.key]
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        self.eo_lite.async_set(self.key, True)
+        await self._async_switch(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        self.eo_lite.async_set(self.key, False)
+        await self._async_switch(False)
+
+    async def _async_switch(self, on: bool) -> None:
+        """Switching a toggle switches the charger, so whoever does it must
+        be allowed to control the charger's own switches too, as Home
+        Assistant's switch groups require of their members. EO-Lite then
+        sets them as itself, which Home Assistant doesn't check."""
+        context = self._context
+        if context and context.user_id:
+            if (user := await self.hass.auth.async_get_user(context.user_id)) is None:
+                raise UnknownUser(context=context)
+            for entity_id in (self.eo_lite.charging_switch, self.eo_lite.timers_switch):
+                if not (user.is_admin or user.permissions.check_entity(entity_id, POLICY_CONTROL)):
+                    raise Unauthorized(context=context, entity_id=entity_id, permission=POLICY_CONTROL)
+        self.eo_lite.async_set(self.key, on, context)

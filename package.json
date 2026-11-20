@@ -1,0 +1,8 @@
+{
+  "name": "eo-lite",
+  "private": true,
+  "description": "Test tooling only: the dashboard script's tests run in jsdom.",
+  "devDependencies": {
+    "jsdom": "31.0.1"
+  }
+}

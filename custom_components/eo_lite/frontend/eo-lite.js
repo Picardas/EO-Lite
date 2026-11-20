@@ -445,7 +445,11 @@
     }
 
     _switch(entityId, on) {
-      if (entityId) this._hass.callService("switch", on ? "turn_on" : "turn_off", {}, { entity_id: entityId });
+      if (!entityId) return;
+      // Refused (by someone who may not control the charger, say): the
+      // switch goes back to showing the toggle as it is.
+      this._hass.callService("switch", on ? "turn_on" : "turn_off", {}, { entity_id: entityId })
+        .catch(() => { this._seen = null; this._update(); });
     }
 
     _moreInfo(entityId) {
@@ -507,14 +511,17 @@
     _timerBlock(n, deletable) {
       const el = this._block(`timer_${n}`, `Timer ${n}`, "mdi:timer-outline", [this._timerCard(n, deletable)]);
       el.deletable = deletable;
+      el.ids = JSON.stringify(this._ids(n));
       return el;
     }
 
     // Fills `into` with Home Assistant cards once its card helpers have
-    // loaded, unless the card has been rendered again in the meantime.
+    // loaded, unless the card has been rendered again in the meantime, or
+    // `into` has been filled again (only the latest fill counts).
     async _fill(render, into, cards, configs) {
+      const fill = (into.fill = {});
       const helpers = await loadCardHelpers();
-      if (render !== this._rendering) return;
+      if (render !== this._rendering || into.fill !== fill) return;
       for (const config of configs) {
         const card = helpers.createCardElement(config);
         if (this._hass) card.hass = this._hass;
@@ -626,12 +633,15 @@
         const next = numbers.find((m) => Number(m) > Number(n) && this._timers.has(m));
         this._el.list.insertBefore(el, next ? this._timers.get(next) : this._el.after);
       }
-      // A timer's card is made again when whether it can be deleted changes.
+      // A timer's card is made again when whether it can be deleted changes,
+      // or its entities do (renamed, or still arriving one by one).
       for (const t of timers) {
         const el = this._timers.get(t.n);
         const deletable = this._deletable(t, timers);
-        if (el.deletable === deletable) continue;
+        const ids = JSON.stringify(this._ids(t.n));
+        if (el.deletable === deletable && el.ids === ids) continue;
         el.deletable = deletable;
+        el.ids = ids;
         const body = el.querySelector(".body");
         body.replaceChildren();
         el.cards = [];

@@ -43,10 +43,12 @@ integration set up first.
 Then go to **Settings → Devices & services → Add integration → EO-Lite**.
 - It asks two things: which charger, and whether to add its Charger
   dashboard.
-- Reload the browser, and the Charger dashboard is in the sidebar.
+- Reload the browser as an admin, and the Charger dashboard is in the
+  sidebar.
 
-Setting it up changes nothing on the charger by itself: the two toggles
-start as the charger is.
+Setting it up doesn't change when the car charges: the two toggles start as
+the charger is, and its switches are set to match them (with both on, the
+timers switch is turned off, since with charging on the timers add nothing).
 
 ## Allow charging, and Only during timers
 
@@ -65,11 +67,21 @@ charger's from them:
 - **Only during timers is remembered** while charging isn't allowed, so
   allowing it again doesn't start charging straight away.
 - **The toggles are in charge.** EO-Lite sets the charger again when Home
-  Assistant starts and when the charger comes back after being unreachable.
+  Assistant starts and when the charger comes back after being unreachable
+  or restarting, so it overrides openeo's *Retain state on restart: off*.
   Use the toggles, on the dashboard or in automations
   (`switch.eo_lite_allow_charging`, `switch.eo_lite_only_during_timers`),
   rather than the charger's own switches: a change made to those somewhere
   else is left alone and isn't shown on the toggles.
+- **Switching the toggles needs the charger's switches too.** The toggles
+  switch the charger, so someone may switch them only if they may control
+  the charger's own two switches. Admins and ordinary users can; a
+  read-only user, or one whose permissions leave out the charger's
+  switches, can't. Automations can.
+- **Rename freely.** EO-Lite remembers the charger by openeo's own id, so
+  it's still found when its entities or the charger itself are renamed. If
+  the charger can't be found at all (its integration's removed, say),
+  there's a Repairs issue until it's back.
 
 ## The Charger dashboard
 
@@ -112,22 +124,25 @@ strategy:
 - **The charger's overall current limit** isn't on the dashboard. Charging
   outside the timers uses it as it's set on the charger.
 - **One charger.**
-- **The charger's entity ids** must start as its integration names them
-  (`switch.openeo_charger_charging`, `sensor.openeo_charger_power_delivered`
-  and so on). EO-Lite finds the rest from the charging switch's.
+- **Setting it up finds the charger by its switches' entity ids:** they
+  must end `_charging` and `_timers`, with the same start, as its
+  integration names them (`switch.openeo_charger_charging`,
+  `switch.openeo_charger_timers`). After that, renaming is fine (see above).
+  A charger whose entities have no unique ids is always found by those
+  names, and the rest of its entities by the names its integration gives.
 
 ## Development
 
 ```bash
 pip install -r requirements_test.txt
 pytest                             # the toggles and setup, against a stand-in charger
-npm install --no-save jsdom
+npm ci --ignore-scripts
 node tests/dashboard.test.js       # the dashboard script, in a stand-in browser
+pip install ruff==0.17.6 && ruff check .
 ```
 
 [AGENTS.md](AGENTS.md) explains how the code is laid out and how to change
-it. `docs/dashboard-before-eo-lite.yaml` is the hand-written dashboard this
-replaced.
+it.
 
 EO-Lite isn't affiliated with or endorsed by EO Charging or the OpenEO
 project.

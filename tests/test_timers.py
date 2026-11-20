@@ -1,8 +1,8 @@
 """Finding the charger's timers and entities by openeo's own ids, whatever
 Home Assistant names them, and telling the dashboard as they change."""
 
-from __future__ import annotations
-
+import logging
+from typing import Any
 from unittest.mock import Mock
 
 import pytest
@@ -11,10 +11,10 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import entity_registry as er
 
-from custom_components.eo_lite import dashboard
+from custom_components.eo_lite import charger as charger_lookup, dashboard
 from custom_components.eo_lite.const import CONF_CHARGER, CONF_DASHBOARD, DOMAIN
 
-from .conftest import set_up, ws
+from .conftest import ALLOW, ONLY_TIMERS, add_openeo, set_up, toggle, ws
 
 DEVICE = "openeo_charger_1"
 
@@ -67,7 +67,7 @@ async def openeo(hass: HomeAssistant) -> None:
 
 @pytest.fixture
 def entry() -> MockConfigEntry:
-    return MockConfigEntry(domain=DOMAIN, data={CONF_CHARGER: "openeo_charger"}, options={CONF_DASHBOARD: False})
+    return MockConfigEntry(domain=DOMAIN, data={CONF_CHARGER: "openeo_charger"}, options={CONF_DASHBOARD: False}, minor_version=2)
 
 
 def config(hass: HomeAssistant) -> dict:
@@ -159,3 +159,113 @@ async def test_dashboards_open_through_a_reload_are_told_again(hass: HomeAssista
     assert await hass.config_entries.async_reload(entry.entry_id)
     await hass.async_block_till_done()
     assert connection.send_message.call_count > sent
+
+
+# ---- In a large home ------------------------------------------------------------
+
+
+@pytest.fixture
+def searches(monkeypatch: pytest.MonkeyPatch) -> list[str]:
+    """Each time the registry's looked through for the charger."""
+    found: list[str] = []
+    real = charger_lookup.find
+
+    def find(hass: HomeAssistant, charger: str, device: str | None = None) -> Any:
+        found.append(charger)
+        return real(hass, charger, device)
+
+    monkeypatch.setattr(charger_lookup, "find", find)
+    return found
+
+
+async def test_the_rest_of_the_house_changing_isn_t_searched(
+    hass: HomeAssistant, openeo: None, entry: MockConfigEntry, searches: list[str]
+) -> None:
+    await set_up(hass, entry)
+    searches.clear()
+    registry = er.async_get(hass)
+    # A zigbee2mqtt bridge adds 50 MQTT entities, and another entity's renamed, then removed.
+    for i in range(50):
+        registry.async_get_or_create("sensor", "mqtt", f"0x00158d{i:06x}_temperature", suggested_object_id=f"z2m_{i}")
+    other = registry.async_get_or_create("light", "hue", "kitchen")
+    registry.async_update_entity(other.entity_id, new_entity_id="light.kitchen_ceiling")
+    registry.async_remove("light.kitchen_ceiling")
+    await hass.async_block_till_done()
+    # None of it is the charger's, so the registry isn't looked through for it.
+    assert searches == []
+
+
+async def test_a_renamed_charger_switch_is_still_looked_for(
+    hass: HomeAssistant, entry: MockConfigEntry, searches: list[str]
+) -> None:
+    openeo = await add_openeo(hass)
+    await set_up(hass, entry)
+    await toggle(hass, ONLY_TIMERS, True)
+    await toggle(hass, ALLOW, True)
+    searches.clear()
+    # The charger's timers switch is renamed in Settings: that's the charger's, so it's looked for.
+    await openeo.rename("timers_switch", "switch.garage_timers")
+    assert searches == ["openeo_charger"]
+    # And it's followed: switching charging off reaches it.
+    await toggle(hass, ALLOW, False)
+    assert not openeo.charges(in_timer=True)
+
+
+async def test_a_timer_renamed_after_set_up_reaches_the_dashboard(
+    hass: HomeAssistant, openeo: None, entry: MockConfigEntry
+) -> None:
+    await set_up(hass, entry)
+    connection = subscribe(hass)
+    er.async_get(hass).async_update_entity(
+        "time.openeo_charger_charge_schedule_1_start", new_entity_id="time.front_garden_timer_1_from"
+    )
+    await hass.async_block_till_done()
+    assert last(connection)["timers"][0]["start"] == "time.front_garden_timer_1_from"
+
+
+async def test_a_charger_that_appears_in_the_registry_later_is_found(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    # EO-Lite's set up before openeo's entities are registered: they're found by name.
+    await set_up(hass, entry)
+    connection = subscribe(hass)
+    assert last(connection)["timers"] is None
+    # openeo's MQTT discovery registers the charging switch, then a timer.
+    mqtt(hass, "switch", "charging", "switch.openeo_charger_charging", "off")
+    add_timer(hass, 1, "front_garden_openeo_charger")
+    await hass.async_block_till_done()
+    assert [t["n"] for t in last(connection)["timers"]] == [1]
+
+
+async def test_timer_parts_registered_before_the_charging_switch_are_found(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> None:
+    # EO-Lite's set up first; MQTT discovery registers a timer before the charging switch.
+    await set_up(hass, entry)
+    connection = subscribe(hass)
+    add_timer(hass, 1, "front_garden_openeo_charger")
+    await hass.async_block_till_done()
+    mqtt(hass, "switch", "charging", "switch.openeo_charger_charging", "off")
+    await hass.async_block_till_done()
+    # Once the charging switch says which charger it is, its timer's found too.
+    assert [t["n"] for t in last(connection)["timers"]] == [1]
+
+
+# ---- What openeo can't have made ----------------------------------------------
+
+
+async def test_a_timer_number_too_long_to_be_openeo_s_is_left_out(
+    hass: HomeAssistant, openeo: None, entry: MockConfigEntry, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A timer number longer than openeo's (one of 5,000 digits is more than
+    Python reads as a number) is ignored, whether it's there at setup or
+    turns up later."""
+    huge = "9" * 5000
+    mqtt(hass, "number", f"schedule_{huge}_amps", "number.junk_1", "16")
+    eo_lite = await set_up(hass, entry)
+    assert [timer["n"] for timer in eo_lite.timers] == [1]
+    mqtt(hass, "number", f"schedule_{huge}0_amps", "number.junk_2", "16")
+    add_timer(hass, 2)
+    await hass.async_block_till_done()
+    assert [timer["n"] for timer in eo_lite.timers] == [1, 2]
+    assert [record.getMessage() for record in caplog.records if record.levelno >= logging.ERROR] == []

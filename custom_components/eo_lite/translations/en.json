@@ -3,35 +3,23 @@
     "step": {
       "user": {
         "title": "EO-Lite",
-        "description": "An overall Allow charging, an Only during timers that means it, and a Charger dashboard with the charger's timers, for an OpenEO charger that's already in Home Assistant.\n\nThe two toggles start as the charger is now, so setting this up doesn't change when the car charges.",
+        "description": "A Charger dashboard for an Oureo EV charger that's already paired in Home Assistant via ESPHome.",
         "data": {
           "charger": "Charger",
           "dashboard": "Charger dashboard"
         },
         "data_description": {
-          "charger": "The charger whose charging and timers switches EO-Lite sets.",
+          "charger": "The Oureo charger whose ESPHome entities EO-Lite shows on the dashboard.",
           "dashboard": "Add EO-Lite's Charger dashboard to the sidebar the next time an admin opens Home Assistant (once: if you delete it, it stays deleted)."
         }
       }
     },
     "abort": {
       "single_instance_allowed": "EO-Lite is already set up.",
-      "no_charger": "No charger found. Set up the OpenEO charger's own integration first: EO-Lite looks for its charging and timers switches."
+      "no_charger": "No Oureo charger found. Pair the charger via Home Assistant's ESPHome integration first: EO-Lite looks for its charge mode selector (select.*_charge_mode)."
     },
     "create_entry": {
       "default": "Reload the browser: EO-Lite then adds its Charger dashboard to the sidebar (unless you turned that off)."
-    }
-  },
-  "entity": {
-    "switch": {
-      "allow_charging": { "name": "Allow charging" },
-      "only_during_timers": { "name": "Only during timers" }
-    }
-  },
-  "issues": {
-    "charger_not_found": {
-      "title": "EO-Lite can't find the charger",
-      "description": "Neither of the charger's switches ({charging_switch}, {timers_switch}) is in Home Assistant, so Allow charging and Only during timers can't reach the charger. Check that the OpenEO charger's own integration is set up and working. This goes away by itself once the charger's back."
     }
   }
 }

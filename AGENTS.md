@@ -5,10 +5,11 @@ README covers what EO-Lite does for its users.
 
 EO-Lite is a Home Assistant custom integration (domain `eo_lite`), installed
 through HACS, built the way [Hue-Lite](https://github.com/Picardas/Hue-Lite)
-is. It sits on top of an OpenEO charger's own integration: it adds two
-toggles, sets the charger's switches from them, and serves a Charger
-dashboard. It has no dependencies beyond Home Assistant, and its dashboard is
-one plain JavaScript file with no build step.
+is. It sits on top of Home Assistant Core's built-in `ESPHome` integration for
+an **Oureo** EV charger (documented in `HOMEASSISTANT_API.md`) and serves a
+Charger dashboard. It has no dependencies beyond Home Assistant, creates no
+synthetic proxy switch entities, and its dashboard is one plain JavaScript file
+with no build step.
 
 ## Layout
 
@@ -17,23 +18,20 @@ files at the repository root.
 
 | Path | What's there |
 | ---- | ------------ |
-| `engine.py` | The core: the two toggles, stored data (`_stored` checks everything loaded), setting the charger's switches from them, and the Repairs issue when the charger can't be found |
-| `const.py` | Names, and `charger_entities`: the charger integration's entity ids EO-Lite uses |
-| `charger.py` | Finding the charger's entities and timers in the entity registry by openeo's own ids, whatever Home Assistant names them |
-| `switch.py` | The toggles' entities, which check the user may control the charger's switches |
+| `engine.py` | The core: remembering the charger device, watching the entity registry for renames, stored data (`_stored` checks everything loaded) |
+| `const.py` | Names, and `OUREO_ENTITIES` / `charger_entities`: all 29 Oureo entities from `HOMEASSISTANT_API.md` |
+| `charger.py` | Finding the charger's 29 entities in the entity registry by ESPHome component + `object_id`, whatever Home Assistant names them |
 | `dashboard.py` | Serves the script; the websocket commands the dashboard uses |
-| `config_flow.py`, `__init__.py` | Setup, migrations |
+| `config_flow.py`, `__init__.py` | Setup and entry lifecycle |
 | `frontend/eo-lite.js` | The Charger dashboard: a strategy and its card |
 | `frontend/eo-lite-loader.js` | What every page loads: it loads `eo-lite.js`, trying again if it doesn't arrive |
-| `translations/en.json`, `icons.json` | Entity, setup and Repairs text; icons |
-| `tests/` | pytest tests, and `dashboard.test.js` for the script. `conftest.py` has the stand-in chargers: `Charger` (switches with no unique ids, found by name) and `Openeo` (registered as openeo's MQTT discovery does, so they can be renamed, go or come back), and `ws()`, which checks a command against its schema first, as an admin |
+| `translations/en.json` | Setup text |
+| `tests/` | pytest tests, and `dashboard.test.js` for the script. `conftest.py` has the `Oureo` stand-in (registered via ESPHome in the entity and device registries so entities can be renamed), `add_simple_charger` (plain states without registry entries), and `ws()`, which checks a command against its schema first, as an admin |
+| `tests/test_charger.py` | Mapping all 29 Oureo entities, rename tracking, and ignoring unrelated registry events |
 | `tests/test_permissions.py` | Who may do what, through Home Assistant's real websocket and http server with real users |
 | `docs/images/` | README screenshots |
 | `pyproject.toml` | ruff's rules |
 | `package.json`, `package-lock.json` | jsdom for `dashboard.test.js`, at pinned versions (test tooling only) |
-
-The charger integration's source isn't in this repository. What's known of
-it is its entity ids and how its two switches behave (see `engine.py`).
 
 ## Checking a change
 
@@ -49,10 +47,8 @@ pip install ruff==0.17.6 && ruff check .   # the version CI uses; rules in pypro
   checks, and checks the dashboard scripts parse (see
   `.github/workflows/validate.yml`).
 - **Screenshots:** `tests/screenshots/index.html` renders the dashboard
-  script with a mock Home Assistant, for the README's screenshots in
-  `docs/images/` (`?scene=timers|charging|off|full`, `&folded=power,timer_1`,
-  `&phone`, `&dark`). Serve the repository root and take them with a
-  headless browser, 520 px wide for a phone.
+  script with a mock Home Assistant (`?scene=timers|charging|off|fault|ntp`,
+  `&folded=power,timer_1,diagnostics`, `&phone`, `&dark`).
 - **A real charger:** say plainly what hasn't been tried on a real charger
   or a real Home Assistant.
 
@@ -62,29 +58,20 @@ pip install ruff==0.17.6 && ruff check .   # the version CI uses; rules in pypro
   and one clear behaviour over options. The dashboard's blocks, headings and
   folding copy Hue-Lite's routines card, and the status card its light
   bars (the round icon, the colours): keep them looking alike.
-- **Behaviour lives in Python.** The dashboard shows state and calls actions
-  and websocket commands; it decides nothing itself.
+- **Behaviour lives in Python / Oureo.** The dashboard shows state and calls
+  Home Assistant actions and websocket commands; it decides nothing itself.
 - **Every behaviour change has a test.** Tests describe what happens from
   the user's side, one scenario per test, with comments narrating the steps.
-  The stand-in charger's `charges(in_timer)` says whether the car would
-  charge: assert on that rather than on which commands were sent.
 - **Comments and docstrings** are plain English and say what happens, not
   how the code does it. Use British spelling (colour, behaviour).
 - **Distrust stored data and the dashboard.** Check everything loaded from
   storage, and bound everything a websocket command accepts.
-- **Permissions:** switching a toggle needs control of both of the charger's
-  switches (an admin always may), as EO-Lite then switches them as itself.
-  Commands use `_with_eo_lite`. Tests of who may do what go through the
-  real websocket with real users (`hass_ws_client`), in
-  `tests/test_permissions.py`.
-- **The toggles are in charge.** A charger switch that comes back after
-  being unavailable is set again from the toggles (only that switch: the
-  other was set when it was back); a change made on the charger otherwise
-  is left alone.
-- **Finding the charger:** by openeo's id for it, remembered in the config
-  entry (`device`) from the registry, so renamed entities and devices are
-  still found. Look entities up by openeo's unique ids (`charger.py`), not
-  by entity id; a charger with no unique ids is found by name.
+- **Finding the charger:** by Home Assistant's device id for the ESPHome
+  charger, remembered in the config entry (`device`) from `select.*_charge_mode`.
+  Look entities up in `charger.py` by ESPHome `-{component}-{object_id}`
+  unique IDs so renamed entities are still found without substring collisions
+  (`current` vs `hw_max_current` / `watchdog_current`). Fall back to default
+  names when no registry entry is present.
 - **Python:** `import probatio as vol` (Home Assistant's validation library;
   `voluptuous` is only an alias of it). No `from __future__` imports: Home
   Assistant needs Python 3.14, which doesn't need them.

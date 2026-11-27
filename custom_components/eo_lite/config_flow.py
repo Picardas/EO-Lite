@@ -1,6 +1,7 @@
-"""Setup asks two things: which charger, and whether to add the Charger
+"""Setup asks two things: which Oureo charger, and whether to add the Charger
 dashboard."""
 
+import re
 from typing import Any
 
 import probatio as vol
@@ -17,21 +18,28 @@ from homeassistant.helpers.selector import (
 )
 
 from . import charger as charger_lookup
-from .const import CONF_CHARGER, CONF_DASHBOARD, CONF_DEVICE, DOMAIN, NAME, charger_entities
+from .const import CONF_CHARGER, CONF_DASHBOARD, CONF_DEVICE, DOMAIN, NAME
+
+CHARGER_NAME = re.compile(r"[a-z0-9_]+")
+REQUIRED_MODES = {"Off", "On", "Timer"}
 
 
 @callback
 def chargers(hass: HomeAssistant) -> dict[str, str]:
-    """The chargers there are, by the start of their entity ids, with a
-    name for each: anything with both a charging switch and a timers switch."""
+    """The Oureo chargers present in Home Assistant, keyed by the start of
+    their entity ids (`eo_mini_pro_2` for `select.eo_mini_pro_2_charge_mode`)."""
     entities, devices = er.async_get(hass), dr.async_get(hass)
     found = {}
-    for state in hass.states.async_all("switch"):
+    for state in hass.states.async_all("select"):
         object_id = state.entity_id.partition(".")[2]
-        charger = object_id.removesuffix("_charging")
-        if charger in ("", object_id) or hass.states.get(charger_entities(charger)["timers_switch"]) is None:
+        charger = object_id.removesuffix("_charge_mode")
+        if charger in ("", object_id) or not CHARGER_NAME.fullmatch(charger):
             continue
         entry = entities.async_get(state.entity_id)
+        is_esphome = entry is not None and entry.platform == "esphome" and entry.unique_id.endswith("-select-charge_mode")
+        options = set(state.attributes.get("options") or ())
+        if not (is_esphome or REQUIRED_MODES.issubset(options)):
+            continue
         device = devices.async_get(entry.device_id) if entry and entry.device_id else None
         found[charger] = (device and (device.name_by_user or device.name)) or charger
     return found
@@ -39,7 +47,6 @@ def chargers(hass: HomeAssistant) -> dict[str, str]:
 
 class EoLiteConfigFlow(ConfigFlow, domain=DOMAIN):
     VERSION = 1
-    # Minor version 2 remembers openeo's id for the charger (see async_migrate_entry).
     MINOR_VERSION = 2
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:

@@ -2,10 +2,9 @@
 <!--
   Screenshots for the README: the dashboard script with a mock hass, real
   Material Design icons (from jsDelivr) and Home Assistant's card look.
-  ?scene=timers|charging|off|full says what the charger's doing, &time=HH:MM
-  the time of day, &folded=a,b
-  folds blocks (power, timer_1, …), &phone lays it out at a
-  phone's width and &dark uses the dark theme. AGENTS.md says how to take them.
+  ?scene=timers|charging|off|fault|ntp says what the charger's doing, &time=HH:MM
+  the time of day, &folded=power,timer_1,diagnostics folds blocks, &phone lays
+  it out at a phone's width and &dark uses the dark theme. AGENTS.md says how to take them.
 -->
 <html lang="en">
 <head>
@@ -29,7 +28,6 @@
     .sections { max-width: 1500px; margin: 0 auto; }
   </style>
   <script>
-    // The time of day the dashboard sees (?time=HH:MM, 20:15 by default), so the screenshots don't change with it.
     {
       const [h, m] = (new URLSearchParams(location.search).get("time") || "20:15").split(":").map(Number);
       const fixed = new Date(2026, 10, 18, h, m).getTime();
@@ -42,7 +40,6 @@
     window.errors = [];
     addEventListener("error", (e) => window.errors.push(`${e.message} @${e.lineno}`));
     addEventListener("unhandledrejection", (e) => window.errors.push(String(e.reason)));
-    // Home Assistant's card and switch, as they look.
     customElements.define("ha-card", class extends HTMLElement {
       constructor() {
         super();
@@ -50,21 +47,6 @@
           border-radius: 12px; border: 1px solid var(--divider-color); box-sizing: border-box; }</style><slot></slot>`;
       }
     });
-    customElements.define("ha-switch", class extends HTMLElement {
-      constructor() {
-        super();
-        this.attachShadow({ mode: "open" }).innerHTML = `<style>
-          :host { display: inline-block; position: relative; width: 36px; height: 14px; margin-right: 4px; border-radius: 7px;
-                  background: rgba(var(--rgb-primary-text-color), 0.38); }
-          :host([checked]) { background: rgba(var(--rgb-primary-color), 0.5); }
-          .thumb { position: absolute; top: -3px; left: -2px; width: 20px; height: 20px; border-radius: 50%; background: #fafafa;
-                   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4); }
-          :host([checked]) .thumb { left: 18px; background: var(--primary-color); }</style><div class="thumb"></div>`;
-      }
-      set checked(on) { this.toggleAttribute("checked", Boolean(on)); }
-      get checked() { return this.hasAttribute("checked"); }
-    });
-    // ha-icon is defined once the icons have loaded (see below); the elements already there upgrade then.
     window.iconsLoaded = new Promise((resolve) => { window.iconsReady = resolve; });
     window.missingIcons = new Set();
   </script>
@@ -98,75 +80,97 @@
     const params = new URLSearchParams(location.search);
     const scene = params.get("scene") || "timers";
     if (params.has("dark")) document.body.classList.add("dark");
-    // Headless windows are at least ~500px wide: lay a phone out at 390px and zoom it to fit.
     if (params.has("phone")) document.documentElement.style.zoom = String(innerWidth / 390);
 
-    const C = "openeo_charger";
-    const NIGHT = ["23:30:00", "05:30:00", 32];
-    const PEAK = ["16:00:00", "19:00:00", 6];
-    // What the charger's doing in each scene: its timers ([from, until, amps], from timer 1), the toggles, and the session.
-    // openeo always has at least one timer.
+    const C = "eo_mini_pro_2";
     const SCENES = {
-      timers: { timers: [NIGHT, PEAK], allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
-      charging: { timers: [NIGHT, PEAK], allow: "on", only: "off", connected: "on", charging: "on", state: "charging", kw: 7.2, amps: 31.4, kwh: 12.35, cost: 1.5 },
-      off: { timers: [NIGHT], allow: "off", only: "off", connected: "off", charging: "off", state: "idle", kw: 0, amps: 0, kwh: 0, cost: 0 },
-      full: { timers: [NIGHT, PEAK, ["12:00:00", "14:00:00", 16], ["02:00:00", "04:00:00", 20]], allow: "on", only: "on", connected: "on", charging: "off", state: "car-connected", kw: 0, amps: 0, kwh: 0, cost: 0 },
+      timers: { mode: "Timer", t1: ["on", "00:30:00", "04:30:00"], t2: ["on", "23:00:00", "01:00:00"], cable: "on", vehicle: "on", charging: "off", fault: "off", clock: "on", state: "car-connected", w: 0, amps: 0, session: 0, total: 142.3 },
+      charging: { mode: "On", t1: ["on", "00:30:00", "04:30:00"], t2: ["off", "00:00:00", "00:00:00"], cable: "on", vehicle: "on", charging: "on", fault: "off", clock: "on", state: "charging", w: 7315, amps: 31.2, session: 12.35, total: 154.65 },
+      off: { mode: "Off", t1: ["on", "00:30:00", "04:30:00"], t2: ["off", "00:00:00", "00:00:00"], cable: "off", vehicle: "off", charging: "off", fault: "off", clock: "on", state: "idle", w: 0, amps: 0, session: 0, total: 142.3 },
+      fault: { mode: "On", t1: ["on", "00:30:00", "04:30:00"], t2: ["off", "00:00:00", "00:00:00"], cable: "on", vehicle: "on", charging: "off", fault: "on", clock: "on", state: "mains-fault", w: 0, amps: 0, session: 1.2, total: 143.5 },
+      ntp: { mode: "Timer", t1: ["on", "00:30:00", "04:30:00"], t2: ["off", "00:00:00", "00:00:00"], cable: "on", vehicle: "on", charging: "off", fault: "off", clock: "off", state: "car-connected", w: 0, amps: 0, session: 0, total: 142.3 },
     };
-    const now = SCENES[scene];
+    const now = SCENES[scene] || SCENES.timers;
 
     const entity = (id, state, attributes = {}) => ({ entity_id: id, state: String(state), attributes });
-    const list = [
-      entity("switch.eo_lite_allow_charging", now.allow),
-      entity("switch.eo_lite_only_during_timers", now.only),
-      entity(`sensor.${C}_charger_state`, now.state, { since: now.charging === "on" ? "2 hours ago" : "48 minutes ago" }),
-      entity(`sensor.${C}_power_delivered`, now.kw.toFixed(2), { unit_of_measurement: "kW" }),
-      entity(`sensor.${C}_vehicle_current`, now.amps, { unit_of_measurement: "A" }),
-      entity(`binary_sensor.${C}_charging_active`, now.charging),
-      entity(`binary_sensor.${C}_vehicle_connected`, now.connected),
-      entity(`sensor.${C}_session_kwh`, now.kwh.toFixed(2), { unit_of_measurement: "kWh" }),
-      entity(`sensor.${C}_session_cost`, now.cost.toFixed(2), { unit_of_measurement: "GBP" }),
-      entity(`button.${C}_add_charge_schedule`, "unknown"),
-    ];
-    now.timers.forEach(([start, end, amps], i) => {
-      const n = i + 1;
-      list.push(
-        entity(`number.${C}_charge_schedule_${n}_current`, amps, { unit_of_measurement: "A" }),
-        entity(`time.${C}_charge_schedule_${n}_start`, start),
-        entity(`time.${C}_charge_schedule_${n}_end`, end),
-        entity(`button.${C}_delete_charge_schedule_${n}`, "unknown"),
-      );
-    });
-    const states = Object.fromEntries(list.map((s) => [s.entity_id, s]));
-
-    // What EO-Lite tells the dashboard (dashboard.websocket_config).
-    const setup = {
-      charger: C,
-      add_dashboard: false,
-      entities: {
-        charging_switch: `switch.${C}_charging`, timers_switch: `switch.${C}_timers`,
-        state: `sensor.${C}_charger_state`, power: `sensor.${C}_power_delivered`, vehicle_current: `sensor.${C}_vehicle_current`,
-        charging_active: `binary_sensor.${C}_charging_active`, vehicle_connected: `binary_sensor.${C}_vehicle_connected`,
-        session_kwh: `sensor.${C}_session_kwh`, session_cost: `sensor.${C}_session_cost`, add_timer: `button.${C}_add_charge_schedule`,
-        allow_charging: "switch.eo_lite_allow_charging", only_during_timers: "switch.eo_lite_only_during_timers",
-      },
+    const entities = {
+      charge_mode: `select.${C}_charge_mode`,
+      timer_1_enabled: `switch.${C}_timer_1_enabled`,
+      timer_1_start: `time.${C}_timer_1_start`,
+      timer_1_end: `time.${C}_timer_1_end`,
+      timer_2_enabled: `switch.${C}_timer_2_enabled`,
+      timer_2_start: `time.${C}_timer_2_start`,
+      timer_2_end: `time.${C}_timer_2_end`,
+      mains_voltage_correction: `number.${C}_mains_voltage_correction`,
+      reset_bridge: `button.${C}_reset_bridge`,
+      charger_state: `sensor.${C}_charger_state`,
+      current: `sensor.${C}_current`,
+      voltage: `sensor.${C}_voltage`,
+      power: `sensor.${C}_power`,
+      frequency: `sensor.${C}_frequency`,
+      session_energy: `sensor.${C}_session_energy`,
+      energy_total: `sensor.${C}_energy_total`,
+      cable_connected: `binary_sensor.${C}_cable_connected`,
+      vehicle_connected: `binary_sensor.${C}_vehicle_connected`,
+      charging_active: `binary_sensor.${C}_charging_active`,
+      mains_fault: `binary_sensor.${C}_mains_fault`,
+      controller_connected: `binary_sensor.${C}_controller_connected`,
+      clock_synced: `binary_sensor.${C}_clock_synced`,
+      cpu_temperature: `sensor.${C}_cpu_temperature`,
+      wifi_rssi: `sensor.${C}_wifi_rssi`,
+      rs485_errors: `sensor.${C}_rs485_errors`,
+      eo_firmware_version: `sensor.${C}_eo_firmware_version`,
+      hw_max_current: `sensor.${C}_hw_max_current`,
+      watchdog_timeout: `sensor.${C}_watchdog_timeout`,
+      watchdog_current: `sensor.${C}_watchdog_current`,
     };
-    const folded = (params.get("folded") || "").split(",").filter(Boolean);
+
+    const list = [
+      entity(entities.charge_mode, now.mode, { options: ["Off", "On", "Timer"] }),
+      entity(entities.timer_1_enabled, now.t1[0]),
+      entity(entities.timer_1_start, now.t1[1]),
+      entity(entities.timer_1_end, now.t1[2]),
+      entity(entities.timer_2_enabled, now.t2[0]),
+      entity(entities.timer_2_start, now.t2[1]),
+      entity(entities.timer_2_end, now.t2[2]),
+      entity(entities.mains_voltage_correction, "77.8", { unit_of_measurement: "%" }),
+      entity(entities.reset_bridge, "unknown"),
+      entity(entities.charger_state, now.state),
+      entity(entities.current, now.amps.toFixed(1), { unit_of_measurement: "A" }),
+      entity(entities.voltage, "234.4", { unit_of_measurement: "V" }),
+      entity(entities.power, now.w, { unit_of_measurement: "W" }),
+      entity(entities.frequency, "50", { unit_of_measurement: "Hz" }),
+      entity(entities.session_energy, now.session.toFixed(3), { unit_of_measurement: "kWh" }),
+      entity(entities.energy_total, now.total.toFixed(3), { unit_of_measurement: "kWh" }),
+      entity(entities.cable_connected, now.cable),
+      entity(entities.vehicle_connected, now.vehicle),
+      entity(entities.charging_active, now.charging),
+      entity(entities.mains_fault, now.fault),
+      entity(entities.controller_connected, "on"),
+      entity(entities.clock_synced, now.clock),
+      entity(entities.cpu_temperature, "44.2", { unit_of_measurement: "°C" }),
+      entity(entities.wifi_rssi, "-57", { unit_of_measurement: "dBm" }),
+      entity(entities.rs485_errors, "0"),
+      entity(entities.eo_firmware_version, "0x14"),
+      entity(entities.hw_max_current, now.charging === "on" ? "32.0" : "0.0", { unit_of_measurement: "A" }),
+      entity(entities.watchdog_timeout, "60"),
+      entity(entities.watchdog_current, "0"),
+    ];
+    const states = Object.fromEntries(list.map((s) => [s.entity_id, s]));
+    const folded = params.has("folded") ? params.get("folded").split(",").filter(Boolean) : ["diagnostics"];
 
     window.hass = {
       states,
       config: { state: "RUNNING" },
       user: { is_admin: true },
       async callWS(msg) {
-        if (msg.type === "eo_lite/config") return setup;
+        if (msg.type === "eo_lite/config") return { charger: C, add_dashboard: false, entities };
         if (msg.type === "frontend/get_user_data") return { value: { collapsed: folded } };
         return null;
       },
       callService(domain, service, data, target) { (window.calls ||= []).push({ domain, service, data, target }); },
     };
 
-    // Home Assistant's own cards (entities, tile, sensor), as they look. They
-    // go inside the charger card's shadow root, so each styles itself.
-    const ICONS = { "switch.eo_lite_allow_charging": "mdi:power-plug-battery", "switch.eo_lite_only_during_timers": "mdi:timer-outline" };
     const CARD_CSS = `
       :host { display: block; }
       ha-card { display: block; background: var(--card-background-color); border-radius: 12px; border: 1px solid var(--divider-color); }
@@ -181,21 +185,19 @@
       .on .switch { background: rgba(var(--rgb-primary-color), 0.5); }
       .on .switch::after { left: 18px; background: var(--primary-color); }
       .value { padding: 6px 10px; border-radius: 6px; background: rgba(var(--rgb-primary-text-color), 0.06); font-variant-numeric: tabular-nums; }
-      .action { color: var(--primary-color); font-weight: 500; text-transform: uppercase; letter-spacing: 0.0892857143em; padding: 0 8px; }
+      .action { color: var(--primary-color); font-weight: 500; text-transform: uppercase; padding: 0 8px; }
       .tile { display: flex; align-items: center; gap: 10px; padding: 10px; }
       .badge { width: 36px; height: 36px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none;
                color: #44739e; background: rgba(68, 115, 158, 0.2); }
       .tile .name { font-size: 14px; font-weight: 500; color: var(--primary-text-color); }
       .tile .state { font-size: 12px; color: var(--secondary-text-color); }
       .sensor { position: relative; overflow: hidden; border-radius: 12px; }
-      .sensor .top { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 0; color: var(--secondary-text-color);
-                     font-size: 16px; font-weight: 500; }
+      .sensor .top { display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 0; color: var(--secondary-text-color); font-size: 16px; font-weight: 500; }
       .sensor .top ha-icon { color: #44739e; }
       .sensor .reading { padding: 8px 16px 16px; color: var(--primary-text-color); }
       .sensor .number { font-size: 28px; }
       .sensor .unit { font-size: 18px; color: var(--secondary-text-color); margin-left: 4px; }
       .sensor svg { display: block; width: 100%; height: 56px; }`;
-    // The last day's power as a line: nothing, then last night's charge (and now, while charging).
     function graph(charging) {
       const level = (x) => (x > 0.18 && x < 0.42 ? 1 : charging && x > 0.9 ? 1 : 0);
       const points = Array.from({ length: 101 }, (_, i) => `${i * 5},${50 - 42 * level(i / 100)}`);
@@ -207,29 +209,27 @@
       constructor(config) {
         super();
         const row = (e) => {
-          if (e.type === "button") {
-            return `<div class="row"><ha-icon icon="${e.icon}"></ha-icon><span class="name">${e.name}</span><span class="action">${e.action_name}</span></div>`;
-          }
+          if (e.type === "button") return `<div class="row"><ha-icon icon="${e.icon}"></ha-icon><span class="name">${e.name}</span><span class="action">${e.action_name}</span></div>`;
           const s = states[e.entity];
+          const unit = s.attributes.unit_of_measurement || "";
           const right = e.entity.startsWith("time.") ? `<span class="value">${s.state.slice(0, 5)}</span>`
-            : e.entity.startsWith("number.") ? `<span class="value">${s.state} ${s.attributes.unit_of_measurement}</span>`
-              : `<span class="switch"></span>`;
-          return `<div class="row ${s.state === "on" ? "on" : ""}"><ha-icon icon="${e.icon || ICONS[e.entity]}"></ha-icon><span class="name">${e.name}</span>${right}</div>`;
+            : e.entity.startsWith("switch.") || e.entity.startsWith("binary_sensor.") ? `<span class="switch"></span>`
+              : `<span class="value">${s.state}${unit ? " " + unit : ""}</span>`;
+          return `<div class="row ${s.state === "on" ? "on" : ""}"><ha-icon icon="${e.icon}"></ha-icon><span class="name">${e.name}</span>${right}</div>`;
         };
         let html;
         if (config.type === "tile") {
           const s = states[config.entity];
-          const unit = s.attributes.unit_of_measurement;
-          const state = unit === "GBP" ? `£${s.state}` : unit ? `${s.state} ${unit}` : `${s.state} · ${s.attributes.since}`;
+          const unit = s.attributes.unit_of_measurement || "";
           html = `<ha-card><div class="tile"><span class="badge"><ha-icon icon="${config.icon}"></ha-icon></span>
-            <span><div class="name">${config.name}</div><div class="state">${state}</div></span></div></ha-card>`;
+            <span><div class="name">${config.name}</div><div class="state">${s.state} ${unit}</div></span></div></ha-card>`;
         } else if (config.type === "sensor") {
           const s = states[config.entity];
+          const kw = s.attributes.unit_of_measurement === "W" ? (Number(s.state) / 1000).toFixed(2) : s.state;
           html = `<ha-card><div class="sensor"><div class="top"><span>${config.name}</span><ha-icon icon="${config.icon}"></ha-icon></div>
-            <div class="reading"><span class="number">${s.state}</span><span class="unit">${s.attributes.unit_of_measurement}</span></div>${graph(now.charging === "on")}</div></ha-card>`;
+            <div class="reading"><span class="number">${kw}</span><span class="unit">kW</span></div>${graph(now.charging === "on")}</div></ha-card>`;
         } else {
-          const rows = config.entities.filter((e) => !e.conditions || e.conditions.every((c) => states[c.entity].state === c.state)).map((e) => e.row || e);
-          html = `<ha-card><div class="rows">${rows.map(row).join("")}</div></ha-card>`;
+          html = `<ha-card><div class="rows">${config.entities.map(row).join("")}</div></ha-card>`;
         }
         this.attachShadow({ mode: "open" }).innerHTML = `<style>${CARD_CSS}</style>${html}`;
       }
@@ -254,7 +254,6 @@
     })().catch((err) => window.errors.push(String(err))).finally(() => {
       document.body.dataset.errors = JSON.stringify(window.errors);
       document.body.dataset.missing = [...window.missingIcons].join(" ");
-      document.body.dataset.width = `${innerWidth} ${document.documentElement.scrollWidth}`;
     });
   </script>
 </body>

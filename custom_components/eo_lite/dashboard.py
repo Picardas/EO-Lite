@@ -18,7 +18,6 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.util.hass_dict import HassKey
 
-from .charger import DEFAULT_TIMER
 from .const import DOMAIN
 from .engine import SIGNAL_CHARGER, EoLite, async_get_loaded
 
@@ -81,16 +80,16 @@ def _with_eo_lite(handler: Handler) -> websocket_api.WebSocketCommandHandler:
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/config"})
 @_with_eo_lite
-def websocket_config(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any], eo_lite: EoLite) -> None:
-    """What the dashboard needs: the charger (the start of its entity ids,
-    for its timers), EO-Lite's entity ids and the charger's, and whether an
-    admin's browser should add the Charger dashboard (see
-    websocket_claim_dashboard)."""
+def websocket_config(
+    hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any], eo_lite: EoLite
+) -> None:
+    """What the dashboard needs: the charger prefix, its entity ids, and
+    whether an admin's browser should add the Charger dashboard."""
     connection.send_result(
         msg["id"],
         {
             "charger": eo_lite.charger,
-            "entities": {**eo_lite.charger_entities, **eo_lite.entity_ids},
+            "entities": eo_lite.charger_entities,
             "add_dashboard": eo_lite.use_dashboard and not eo_lite.dashboard_added,
         },
     )
@@ -98,27 +97,19 @@ def websocket_config(hass: HomeAssistant, connection: websocket_api.ActiveConnec
 
 @callback
 def _charger(eo_lite: EoLite) -> dict[str, Any]:
-    """The charger's entities and EO-Lite's, and the charger's timers
-    ({n, current, start, end, remove}: entity ids; None when the dashboard
-    should find them by name), with the timer openeo adds."""
-    return {
-        "entities": {**eo_lite.charger_entities, **eo_lite.entity_ids},
-        "timers": eo_lite.timers,
-        "default_timer": DEFAULT_TIMER,
-    }
+    """The charger's current entity ids."""
+    return {"entities": eo_lite.charger_entities}
 
 
 @websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/subscribe"})
 @callback
 def websocket_subscribe(hass: HomeAssistant, connection: websocket_api.ActiveConnection, msg: dict[str, Any]) -> None:
-    """The charger's entities and timers, now and whenever a timer's added
-    or deleted (or EO-Lite reloads). Taken even while EO-Lite isn't set up,
-    so a dashboard open then hears as soon as it is, without asking again."""
+    """The charger's entities, now and whenever they change in the registry
+    (or EO-Lite reloads). Taken even while EO-Lite isn't set up, so a
+    dashboard open then hears as soon as it is, without asking again."""
 
     @callback
     def send(eo_lite: EoLite | None = None) -> None:
-        # While EO-Lite is starting it isn't loaded yet, so the signal brings
-        # it; while it isn't set up, nothing's sent.
         if eo_lite := eo_lite or async_get_loaded(hass):
             connection.send_message(websocket_api.event_message(msg["id"], _charger(eo_lite)))
 

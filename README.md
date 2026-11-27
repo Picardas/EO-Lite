@@ -4,33 +4,34 @@
 [![HACS: custom](https://img.shields.io/badge/HACS-custom-41BDF5.svg)](https://hacs.xyz/docs/faq/custom_repositories/)
 [![Home Assistant 2026.10+](https://img.shields.io/badge/Home%20Assistant-2026.10%2B-18BCF2.svg)](https://www.home-assistant.io/)
 
-**Charging toggles that mean what they say, and a Charger dashboard, for an
-OpenEO charger that's already in Home Assistant.** EO-Lite gives you:
-- **Allow charging**: off means the car never charges, timers included.
-- **Only during timers**: with charging allowed, the car charges only in the
-  charger's timers.
-- A **Charger dashboard** that builds itself, with each of the charger's
-  timers in a block that folds away.
+**A Charger dashboard for an Oureo EV charger already paired in Home Assistant
+via ESPHome.**
 
-It sits on top of the charger's own integration and uses its entities. It
-doesn't talk to the charger itself.
+EO-Lite keeps the look and feel of [Hue-Lite](https://github.com/Picardas/Hue-Lite)
+while speaking directly to Oureo's 29 ESPHome entities:
 
-| ![The Charger dashboard on a phone: the status card with the toggles and the day's timers, each timer, and power](docs/images/charger-phone.png) | ![The same with the timers and power folded: each heading still sums its block up](docs/images/charger-folded.png) | ![Charging now, in the dark theme](docs/images/charger-charging-dark.png) |
-| :---: | :---: | :---: |
-| What it's doing, the toggles, each timer, power | Fold what you don't need: the headings still tell you | Charging, in the dark theme |
-
-<sub>The screenshots show the Charger dashboard with a sample charger.</sub>
+- **Status card**: live charger state (Ready, Cable connected, Plugged in,
+  Charging with live kW, Mains fault, or Offline), an NTP clock-sync warning
+  banner when `Timer` mode is waiting on time sync, a 3-way **Charge mode**
+  control (`Off`, `Timer`, `On`), and a 24-hour timer strip when `Timer` mode
+  is active.
+- **Timer 1 & Timer 2**: collapsible blocks for Oureo's two on-device timer
+  windows (`enabled`, `start`, `end`).
+- **Power**: live power graph, session energy, persistent lifetime energy
+  (`energy_total`), and live current, voltage, and frequency.
+- **Diagnostics** *(folded by default)*: hardware/Pi diagnostics, binary state
+  sensors, mains voltage calibration, and the RS-485 bridge reset button.
 
 > [!NOTE]
-> **EO-Lite is vibe-coded.** It was built by prompting an AI coding
-> assistant (Claude Code), not written by hand. It has a test suite that
-> runs on every change, against a stand-in charger, and it's in use with a
-> real OpenEO charger. Still, it's a hobby project: expect rough edges.
+> EO-Lite v2 has been tested against a stand-in Oureo ESPHome charger in Home
+> Assistant's test harness and in jsdom, and has not yet been tested against a
+> real Home Assistant instance or live Oureo hardware.
 
 ## Installation
 
-EO-Lite needs Home Assistant 2026.10 or later, and the OpenEO charger's own
-integration set up first.
+EO-Lite needs Home Assistant 2026.10 or later, and your Oureo charger paired
+first via Home Assistant's built-in **ESPHome** integration (port `6053` and
+your Noise key).
 
 **With [HACS](https://hacs.xyz)** (recommended):
 1. In HACS, open ⋮ → **Custom repositories**.
@@ -41,108 +42,50 @@ integration set up first.
 `custom_components/` folder, then restart Home Assistant.
 
 Then go to **Settings → Devices & services → Add integration → EO-Lite**.
-- It asks two things: which charger, and whether to add its Charger
+- It asks two things: which charger, and whether to add its **Charger**
   dashboard.
-- Reload the browser as an admin, and the Charger dashboard is in the
-  sidebar.
-
-Setting it up doesn't change when the car charges: the two toggles start as
-the charger is, and its switches are set to match them (with both on, the
-timers switch is turned off, since with charging on the timers add nothing).
-
-## Allow charging, and Only during timers
-
-The charger's own two switches each allow charging by themselves:
-`switch.openeo_charger_charging` charges straight away, and
-`switch.openeo_charger_timers` charges during the timers even with the first
-one off. EO-Lite's toggles are two switches of its own, and it sets the
-charger's from them:
-
-| Allow charging | Only during timers | The car charges | Charging switch | Timers switch |
-| -------------- | ------------------ | --------------- | --------------- | ------------- |
-| off | off or on | never | off | off |
-| on | off | whenever it's plugged in | on | off |
-| on | on | only during the timers | off | on |
-
-- **Only during timers is remembered** while charging isn't allowed, so
-  allowing it again doesn't start charging straight away.
-- **The toggles are in charge.** EO-Lite sets the charger again when Home
-  Assistant starts and when the charger comes back after being unreachable
-  or restarting, so it overrides openeo's *Retain state on restart: off*.
-  Use the toggles, on the dashboard or in automations
-  (`switch.eo_lite_allow_charging`, `switch.eo_lite_only_during_timers`),
-  rather than the charger's own switches: a change made to those somewhere
-  else is left alone and isn't shown on the toggles.
-- **Switching the toggles needs the charger's switches too.** The toggles
-  switch the charger, so someone may switch them only if they may control
-  the charger's own two switches. Admins and ordinary users can; a
-  read-only user, or one whose permissions leave out the charger's
-  switches, can't. Automations can.
-- **Rename freely.** EO-Lite remembers the charger by openeo's own id, so
-  it's still found when its entities or the charger itself are renamed. If
-  the charger can't be found at all (its integration's removed, say),
-  there's a Repairs issue until it's back.
+- Reload the browser as an admin, and the Charger dashboard is in the sidebar
+  (or add it yourself with `strategy: { type: custom:eo-lite }`).
 
 ## The Charger dashboard
 
 One card, **Charger** (tap it to fold it all away), styled like the Hue-Lite
 dashboard:
 
-- **The status card** says what the charger's doing (charging, plugged in
-  and when it'll start, or ready), with the power while it's charging. Tap
-  it for the charger's history. Below that are **Allow charging**, and
-  **Only during timers** under it while that's on, each saying what it
-  means. While only the timers decide, a strip shows the day's timers with
-  now marked.
-- **Timer 1, 2, …**: a block for each timer, with its times and its own
-  charge current (a low one for slow charging at peak times, say), and
-  Delete. The charger always keeps one timer: deleting the last puts it
-  back to 22:00–06:00 at 16 A, so a lone timer that's already that has no
-  Delete. Deleting a timer moves the later ones up a number. **New timer**
-  adds one at 22:00–06:00 and 16 A. There's no limit.
-- **Power**: power now, and this session's energy and cost.
+- **The status card** shows what the charger's doing (Ready, Cable connected,
+  Plugged in, Charging with live kW, Mains fault, or Not answering). Tap it for
+  the charger's history. Below that is the 3-way **Charge mode** selector
+  (`Off`, `Timer`, `On`), directly bound to Oureo's `select.*_charge_mode`.
+  When `Timer` mode is active, a strip shows the day's enabled timer windows
+  with now marked, and a warning banner appears if the charger's NTP clock isn't
+  synced yet.
+- **Timer 1 & Timer 2**: collapsible blocks for Oureo's two on-device timer
+  windows (`Enabled`, `From`, `Until`).
+- **Power**: live power graph, `session_energy`, `energy_total`, and live
+  current, voltage, and frequency.
+- **Diagnostics**: folded by default; shows all hardware, connectivity,
+  RS-485, and calibration entities plus the `reset_bridge` action.
 
-The timer and power blocks fold away (tap a heading), and each heading sums
-its block up, so a folded one still tells you what you need. Which are
-folded is each person's own.
-
-The dashboard is a strategy, so it's built each time it loads. To add it to
-a dashboard of your own:
-
-```yaml
-strategy:
-  type: custom:eo-lite
-```
+Which blocks are folded is each person's own.
 
 ## Limitations
 
-- **The timers are the charger's.** They're openeo's daily time windows,
-  with no days of the week. A new timer's entities take a few seconds to
-  appear. EO-Lite finds them by openeo's own ids, so it doesn't matter
-  what Home Assistant names them (it names new ones after the charger's
-  area, like `number.front_garden_openeo_charger_charge_schedule_2_current`).
-- **The charger's overall current limit** isn't on the dashboard. Charging
-  outside the timers uses it as it's set on the charger.
 - **One charger.**
-- **Setting it up finds the charger by its switches' entity ids:** they
-  must end `_charging` and `_timers`, with the same start, as its
-  integration names them (`switch.openeo_charger_charging`,
-  `switch.openeo_charger_timers`). After that, renaming is fine (see above).
-  A charger whose entities have no unique ids is always found by those
-  names, and the rest of its entities by the names its integration gives.
+- **Requires Oureo paired via ESPHome.** EO-Lite finds the charger by its
+  `select.*_charge_mode` entity and resolves all 29 entities by their ESPHome
+  unique IDs on that device (falling back to entity names when no registry
+  device is present).
 
 ## Development
 
 ```bash
 pip install -r requirements_test.txt
-pytest                             # the toggles and setup, against a stand-in charger
+pytest
 npm ci --ignore-scripts
-node tests/dashboard.test.js       # the dashboard script, in a stand-in browser
+node tests/dashboard.test.js
 pip install ruff==0.17.6 && ruff check .
 ```
 
-[AGENTS.md](AGENTS.md) explains how the code is laid out and how to change
-it.
+[AGENTS.md](AGENTS.md) explains how the code is laid out and how to change it.
 
-EO-Lite isn't affiliated with or endorsed by EO Charging or the OpenEO
-project.
+EO-Lite isn't affiliated with or endorsed by EO Charging or Oureo.

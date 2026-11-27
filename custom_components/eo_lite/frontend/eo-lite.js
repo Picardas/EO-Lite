@@ -3,55 +3,31 @@
 //
 // A dashboard strategy (`strategy: {type: custom:eo-lite}`) that builds the
 // Charger dashboard every time it loads. The integration tells it the
-// charger's entity ids and its own (websocket `eo_lite/config`). Also
-// defines its card:
-//   custom:eo-lite-charger   the charger in one card, like the routines on
-//                            the Hue-Lite dashboard: a status card (what the
-//                            charger's doing, Allow charging and Only during
-//                            timers, and the day's timers on a strip), then
-//                            a block for each timer and one for power, each
-//                            with a heading that sums it up and folds it away
+// charger's ESPHome entity ids (websocket `eo_lite/config` and
+// `eo_lite/subscribe`). Also defines its card:
+//   custom:eo-lite-charger   the charger in one card, styled like Hue-Lite:
+//                            a status card (what the charger's doing, the 3-way
+//                            charge mode control, NTP warning when needed, and
+//                            the day's timers on a strip), then collapsible
+//                            blocks for Timer 1, Timer 2, Power, and
+//                            Diagnostics.
 //
-// Which blocks are folded is each person's own. Tapping the "Charger"
-// heading folds the whole card away.
-//
-// The timers are the charger's: openeo publishes entities for each timer it
-// has (<n> is its place in the list, from 1), and nothing for timers it
-// hasn't. It always keeps at least one: deleting the last puts it back to
-// 22:00–06:00 at 16 A. Deleting one moves the later timers up a number.
-// EO-Lite finds their entities by openeo's own ids (websocket
-// `eo_lite/subscribe`), as Home Assistant may name them after the charger's
-// area. For a charger it can't find that way, they're found by name:
-//   number.<charger>_charge_schedule_<n>_current
-//   time.<charger>_charge_schedule_<n>_start
-//   time.<charger>_charge_schedule_<n>_end
-//   button.<charger>_delete_charge_schedule_<n>
+// Which blocks are folded is each person's own (Diagnostics starts folded).
+// Tapping the "Charger" heading folds the whole card away.
 
 (() => {
   const DOMAIN = "eo_lite";
+  const STRATEGY = "custom:eo-lite";
+  const MODES = ["Off", "Timer", "On"];
+  const DEFAULT_COLLAPSED = ["diagnostics"];
 
   // ---- The dashboard -------------------------------------------------------
 
-  // The Charger view: one card. `setup` is what EO-Lite says (`charger`: the
-  // start of the charger's entity ids; `entities`: its entity ids and
-  // EO-Lite's).
   function chargerView(setup) {
-    const e = setup.entities;
     const card = {
       type: "custom:eo-lite-charger",
       charger: setup.charger,
-      entities: e,
-      // Blocks after the timers.
-      more: [{
-        id: "power",
-        name: "Power",
-        icon: "mdi:lightning-bolt",
-        cards: [
-          { type: "sensor", entity: e.power, name: "Power now", icon: "mdi:flash", graph: "line", hours_to_show: 24, detail: 2 },
-          { type: "tile", entity: e.session_kwh, name: "Energy this session", icon: "mdi:battery-charging" },
-          { type: "tile", entity: e.session_cost, name: "Cost this session", icon: "mdi:cash" },
-        ],
-      }],
+      entities: setup.entities,
     };
     return {
       title: "Charger",
@@ -67,9 +43,6 @@
     static async generate(config, hass) {
       const setup = await hass.callWS({ type: `${DOMAIN}/config` }).catch(() => null);
       if (!setup) {
-        // While Home Assistant's starting, EO-Lite may not be set up yet.
-        // Home Assistant builds the dashboard again once it's started, by
-        // which time it is, so there's no need to wait for it here.
         const starting = hass.config?.state !== "RUNNING";
         return {
           views: [{
@@ -87,18 +60,15 @@
 
   // ---- Shared card bits ----------------------------------------------------
 
-  // The round icon, as on the Hue-Lite dashboard's light bars.
   const CIRCLE_CSS = `
     .circle { --mdc-icon-size: 24px; width: 36px; height: 36px; border-radius: 50%; flex: none;
               display: flex; align-items: center; justify-content: center; transition: background-color 180ms, color 180ms;
               background: rgba(var(--rgb-primary-text-color, 33, 33, 33), 0.05); color: var(--state-inactive-color, var(--secondary-text-color)); }`;
 
-  // A focus ring for keyboard use only, not left behind by a tap.
   const FOCUS_CSS = `
     [tabindex]:focus { outline: none; }
     [tabindex]:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }`;
 
-  // Click, Enter or Space (not bubbling up to whatever holds `el`).
   function onActivate(el, fn) {
     el.addEventListener("click", (ev) => { ev.stopPropagation(); fn(); });
     el.addEventListener("keydown", (ev) => {
@@ -106,10 +76,6 @@
     });
   }
 
-  // Which blocks each person has folded, saved per signed-in user in Home
-  // Assistant's frontend storage (so it follows them across devices),
-  // falling back to this browser. A list of ids only: anything else (a
-  // damaged layout) is dropped.
   async function loadLayout(hass, key) {
     let saved;
     try {
@@ -118,7 +84,9 @@
     if (!saved) {
       try { saved = JSON.parse(localStorage.getItem(key)); } catch (err) { /* none */ }
     }
-    const collapsed = Array.isArray(saved?.collapsed) ? saved.collapsed.filter((id) => typeof id === "string") : [];
+    const collapsed = Array.isArray(saved?.collapsed)
+      ? saved.collapsed.filter((id) => typeof id === "string")
+      : [...DEFAULT_COLLAPSED];
     return { collapsed };
   }
 
@@ -127,22 +95,18 @@
     hass.callWS({ type: "frontend/set_user_data", key, value: layout }).catch(() => {});
   }
 
-  // Home Assistant's own cards come from its card helpers, loaded once.
   let cardHelpers;
   const loadCardHelpers = () => (cardHelpers = cardHelpers || window.loadCardHelpers());
 
-  // ---- Reading the charger ---------------------------------------------------
+  // ---- Reading the charger -------------------------------------------------
 
   const stateOf = (hass, id) => hass.states[id]?.state;
   const isOn = (hass, id) => stateOf(hass, id) === "on";
-  const answering = (hass, id) => ["on", "off"].includes(stateOf(hass, id));
-  // An entity's state as a number, or null when it isn't one.
   const number = (hass, id) => {
     const value = Number.parseFloat(stateOf(hass, id));
     return Number.isFinite(value) ? value : null;
   };
   const unitOf = (hass, id) => hass.states[id]?.attributes?.unit_of_measurement || "";
-  // A time entity's state as minutes after midnight, or null when it isn't set.
   const minutes = (hass, id) => {
     const match = /^(\d\d):(\d\d)/.exec(stateOf(hass, id) || "");
     return match ? Number(match[1]) * 60 + Number(match[2]) : null;
@@ -152,51 +116,39 @@
     const power = number(hass, id) ?? 0;
     return unitOf(hass, id) === "W" ? power / 1000 : power;
   };
-  const CURRENCIES = { GBP: "£", EUR: "€", USD: "$", "£": "£", "€": "€", $: "$" };
   const DAY = 24 * 60;
 
-  // The start of the next timer after `now` (minutes after midnight), or null.
   function nextStart(timers, now) {
     let best = null;
     for (const t of timers) {
-      if (t.start === null) continue;
+      if (!t.enabled || t.start === null || t.end === null || t.start === t.end) continue;
       const wait = (t.start - now + DAY) % DAY;
       if (best === null || wait < best.wait) best = { wait, start: t.start };
     }
     return best?.start ?? null;
   }
 
-  // A timer's window as stretches of the day, as fractions of it: one, or two
-  // for a timer that runs past midnight.
   function stretches(t) {
-    if (t.start === null || t.end === null || t.start === t.end) return [];
+    if (!t.enabled || t.start === null || t.end === null || t.start === t.end) return [];
     if (t.start < t.end) return [[t.start / DAY, t.end / DAY]];
     return [[t.start / DAY, 1], [0, t.end / DAY]];
   }
 
   // ---- Charger card --------------------------------------------------------
 
-  // The status card: what the charger's doing, the two toggles, and the
-  // day's timers on a strip. Below it, a block for each timer and the
-  // `more` blocks, holding Home Assistant's own cards, like the routines on
-  // the Hue-Lite dashboard: each block's summary goes on its own line under
-  // its name, so it isn't cut off on a phone.
-  //   {charger, entities, more: [{id, name, icon, cards}]}
-  // `charger` is the start of the charger's entity ids, for its timers;
-  // `entities` are the entity ids.
   const ALL = "all";
   const TITLE = "Charger";
 
-  // How the charger shows: the circle's colour, its icon, and its line.
   const LOOKS = {
     charging: { rgb: "var(--eo-charging-rgb)", icon: "mdi:ev-station" },
     waiting: { rgb: "var(--eo-waiting-rgb)", icon: "mdi:ev-plug-type2" },
+    fault: { rgb: "var(--eo-fault-rgb)", icon: "mdi:alert-circle-outline" },
     idle: { rgb: null, icon: "mdi:ev-station" },
     away: { rgb: null, icon: "mdi:ev-station" },
   };
 
   const CARD_CSS = `
-    :host { display: block; --eo-charging-rgb: 67, 160, 71; --eo-waiting-rgb: 255, 193, 7; }
+    :host { display: block; --eo-charging-rgb: 67, 160, 71; --eo-waiting-rgb: 255, 193, 7; --eo-fault-rgb: 211, 47, 47; }
     ${CIRCLE_CSS}
     ${FOCUS_CSS}
     .blocks { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 16px; align-items: start; }
@@ -215,7 +167,6 @@
            -webkit-tap-highlight-color: transparent; }
     .top .circle { width: 44px; height: 44px; --mdc-icon-size: 26px; position: relative; }
     .status.lit .top .circle { background: rgba(var(--look-rgb), 0.2); color: rgb(var(--look-rgb)); }
-    /* While charging, a soft ring spreads out from the circle now and then. */
     .status.charging .top .circle::after { content: ""; position: absolute; inset: 0; border-radius: 50%;
            box-shadow: 0 0 0 0 rgba(var(--look-rgb), 0.4); animation: pulse 2.4s ease-out infinite; }
     @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(var(--look-rgb), 0.4); } 70%, 100% { box-shadow: 0 0 0 10px rgba(var(--look-rgb), 0); } }
@@ -229,13 +180,28 @@
     .reading .value { font-size: 24px; font-weight: 400; line-height: 28px; }
     .reading .unit { font-size: 13px; margin-left: 2px; color: var(--secondary-text-color); }
     .status.charging .reading .value { color: rgb(var(--eo-charging-rgb)); }
+
+    .warning { display: flex; align-items: flex-start; gap: 10px; margin-top: 10px; padding: 8px 10px; border-radius: 8px;
+               background: rgba(var(--eo-waiting-rgb), 0.14); border: 1px solid rgba(var(--eo-waiting-rgb), 0.4);
+               color: var(--primary-text-color); font-size: 12px; line-height: 16px; }
+    .warning ha-icon { flex: none; --mdc-icon-size: 18px; color: rgb(var(--eo-waiting-rgb)); margin-top: 1px; }
+
     .rows { margin-top: 8px; padding-top: 4px; border-top: 1px solid var(--divider-color); }
-    .row { display: flex; align-items: center; gap: 16px; min-height: 52px; padding: 0 4px; }
+    .row { display: flex; align-items: center; gap: 12px; min-height: 52px; padding: 0 4px; }
     .row > ha-icon { flex: none; width: 40px; --mdc-icon-size: 24px; color: var(--state-icon-color, #44739e); }
     .row.on > ha-icon { color: var(--state-switch-active-color, var(--state-active-color, var(--amber-color, #ffc107))); }
     .row .text { flex: 1; min-width: 0; }
     .row .label { font-size: 14px; line-height: 20px; color: var(--primary-text-color); }
     .row .hint { font-size: 12px; line-height: 16px; color: var(--secondary-text-color); }
+    .modes { display: inline-flex; flex: none; padding: 2px; border-radius: 8px;
+             background: rgba(var(--rgb-primary-text-color, 33, 33, 33), 0.06); border: 1px solid var(--divider-color); }
+    .modes button { appearance: none; border: 0; background: transparent; color: var(--secondary-text-color);
+                    font: inherit; font-size: 12px; font-weight: 500; padding: 6px 10px; border-radius: 6px;
+                    cursor: pointer; transition: background-color 150ms, color 150ms; }
+    .modes button.active { background: var(--primary-color); color: var(--text-primary-color, #fff); }
+    .modes button:disabled { opacity: 0.45; cursor: default; }
+    .modes button:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 1px; }
+
     .day { margin: 4px 4px 0; padding-top: 12px; border-top: 1px solid var(--divider-color); }
     .track { position: relative; height: 8px; border-radius: 4px; background: rgba(var(--rgb-primary-text-color, 33, 33, 33), 0.08); }
     .span { position: absolute; top: 0; bottom: 0; border-radius: 4px; background: rgba(var(--rgb-primary-color, 3, 169, 244), 0.75); }
@@ -253,27 +219,21 @@
     .summary { font-size: 13px; color: var(--secondary-text-color); }
     .chev { --mdc-icon-size: 22px; color: var(--secondary-text-color); transition: transform 180ms; flex: none; }
     .collapsed .chev { transform: rotate(-90deg); }
-    .body { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
-    .new { display: flex; flex-direction: column; gap: 8px; }
-    .note { padding: 4px; font-size: 14px; color: var(--secondary-text-color); }`;
+    .body { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }`;
 
   class EoLiteCharger extends HTMLElement {
     setConfig(config) {
       if (typeof config?.charger !== "string" || !/^[a-z0-9_]+$/.test(config.charger)) {
-        throw new Error("charger is the start of the charger's entity ids, like openeo_charger");
+        throw new Error("charger is the start of the charger's entity ids, like eo_mini_pro_2");
       }
       if (config.more !== undefined && !Array.isArray(config.more)) throw new Error("more must be a list of blocks");
       this._config = config;
       this._charger = config.charger;
-      // The charger's entities and timers, kept up to date by EO-Lite once
-      // the card's subscribed; until then, from the config, and by name.
       this._entities = { ...(config.entities || {}), ...(this._live?.entities || {}) };
-      this._layout = this._layout || { collapsed: [] };
+      this._layout = this._layout || { collapsed: [...DEFAULT_COLLAPSED] };
       this._root = this._root || this.attachShadow({ mode: "open" });
-      // The blocks by id, and each timer's by its number.
       this._blocks = new Map();
-      this._timers = new Map();
-      this._addCards = [];
+      this._blockSpecs = [];
       this._seen = null;
       this._render();
       if (this._hass) this._update();
@@ -284,9 +244,7 @@
       if (!this._config) return;
       if (!this._loaded) this._load();
       if (this.isConnected) this._subscribe();
-      // The cards inside skip redrawing themselves when their own states haven't changed.
-      for (const el of [...this._blocks.values(), ...this._timers.values()]) for (const card of el.cards) card.hass = hass;
-      for (const card of this._addCards) card.hass = hass;
+      for (const el of this._blocks.values()) for (const card of el.cards) card.hass = hass;
       this._update();
     }
 
@@ -300,14 +258,13 @@
       unsubscribe?.then((stop) => stop()).catch(() => {});
     }
 
-    // EO-Lite says which entities are the charger's timers, now and as
-    // they're added and deleted.
     _subscribe() {
       if (this._unsubscribe || !this._hass.connection?.subscribeMessage) return;
       this._unsubscribe = this._hass.connection.subscribeMessage((live) => {
         this._live = live;
         this._entities = { ...(this._config.entities || {}), ...(live.entities || {}) };
         this._seen = null;
+        this._syncBlocks();
         this._update();
       }, { type: `${DOMAIN}/subscribe` });
       this._unsubscribe.catch(() => { this._unsubscribe = null; });
@@ -328,7 +285,6 @@
     async _load() {
       this._loaded = true;
       this._layout = await loadLayout(this._hass, this._layoutKey);
-      this._layoutLoaded = true;
       this._arrange();
     }
 
@@ -339,33 +295,106 @@
       this._arrange();
     }
 
-    // ---- The timers' entities ----------------------------------------------
+    // ---- Blocks built from Oureo's entities --------------------------------
 
-    // A timer's entities.
-    _ids(n) {
-      const live = this._live?.timers?.find((t) => String(t.n) === n);
-      if (live) return { current: live.current, start: live.start, end: live.end, remove: live.remove };
-      const c = this._charger;
-      return {
-        current: `number.${c}_charge_schedule_${n}_current`,
-        start: `time.${c}_charge_schedule_${n}_start`,
-        end: `time.${c}_charge_schedule_${n}_end`,
-        remove: `button.${c}_delete_charge_schedule_${n}`,
-      };
+    _desiredBlocks() {
+      const e = this._entities;
+      const timerCards = (n) => [{
+        type: "entities",
+        entities: [
+          { entity: e[`timer_${n}_enabled`], name: "Enabled", icon: "mdi:timer-outline" },
+          { entity: e[`timer_${n}_start`], name: "From", icon: "mdi:clock-start" },
+          { entity: e[`timer_${n}_end`], name: "Until", icon: "mdi:clock-end" },
+        ],
+      }];
+      return [
+        { id: "timer_1", name: "Timer 1", icon: "mdi:timer-outline", cards: timerCards(1) },
+        { id: "timer_2", name: "Timer 2", icon: "mdi:timer-outline", cards: timerCards(2) },
+        {
+          id: "power",
+          name: "Power",
+          icon: "mdi:lightning-bolt",
+          cards: [
+            { type: "sensor", entity: e.power, name: "Power now", icon: "mdi:flash", graph: "line", hours_to_show: 24, detail: 2 },
+            { type: "tile", entity: e.session_energy, name: "Energy this session", icon: "mdi:battery-charging" },
+            { type: "tile", entity: e.energy_total, name: "Total energy", icon: "mdi:counter" },
+            {
+              type: "entities",
+              entities: [
+                { entity: e.current, name: "Current", icon: "mdi:current-ac" },
+                { entity: e.voltage, name: "Voltage", icon: "mdi:sine-wave" },
+                { entity: e.frequency, name: "Frequency", icon: "mdi:waveform" },
+              ],
+            },
+          ],
+        },
+        {
+          id: "diagnostics",
+          name: "Diagnostics",
+          icon: "mdi:wrench-outline",
+          cards: [{
+            type: "entities",
+            entities: [
+              { entity: e.charger_state, name: "Charger state", icon: "mdi:ev-station" },
+              { entity: e.cable_connected, name: "Cable connected", icon: "mdi:cable-data" },
+              { entity: e.vehicle_connected, name: "Vehicle connected", icon: "mdi:car-electric" },
+              { entity: e.charging_active, name: "Charging active", icon: "mdi:battery-charging" },
+              { entity: e.mains_fault, name: "Mains fault", icon: "mdi:alert-circle-outline" },
+              { entity: e.controller_connected, name: "Controller connected", icon: "mdi:lan-connect" },
+              { entity: e.clock_synced, name: "Clock synced", icon: "mdi:clock-check-outline" },
+              { entity: e.hw_max_current, name: "Hardware max current", icon: "mdi:current-ac" },
+              { entity: e.cpu_temperature, name: "CPU temperature", icon: "mdi:thermometer" },
+              { entity: e.wifi_rssi, name: "Wi-Fi signal", icon: "mdi:wifi" },
+              { entity: e.rs485_errors, name: "RS-485 errors", icon: "mdi:alert-outline" },
+              { entity: e.eo_firmware_version, name: "Firmware version", icon: "mdi:chip" },
+              { entity: e.watchdog_timeout, name: "Watchdog timeout", icon: "mdi:timer-sand" },
+              { entity: e.watchdog_current, name: "Watchdog current", icon: "mdi:current-ac" },
+              { entity: e.mains_voltage_correction, name: "Mains voltage correction", icon: "mdi:tune" },
+              {
+                type: "button",
+                name: "Reset RS-485 bridge",
+                icon: "mdi:restart",
+                action_name: "Reset",
+                tap_action: {
+                  action: "perform-action",
+                  perform_action: "button.press",
+                  target: { entity_id: e.reset_bridge },
+                  confirmation: { text: "Hard-reset the RS-485 bridge?" },
+                },
+              },
+            ],
+          }],
+        },
+        ...(this._config.more || []),
+      ];
     }
 
-    // Every timer the charger has, in order.
-    _numbers() {
-      if (Array.isArray(this._live?.timers)) return this._live.timers.map((t) => String(t.n));
-      const start = `number.${this._charger}_charge_schedule_`;
-      const end = "_current";
-      const found = [];
-      for (const id in this._hass.states) {
-        if (!id.startsWith(start) || !id.endsWith(end)) continue;
-        const n = id.slice(start.length, -end.length);
-        if (/^\d+$/.test(n)) found.push(n);
+    _syncBlocks() {
+      const specs = this._desiredBlocks();
+      const orderChanged = specs.length !== this._blockSpecs.length || specs.some((s, i) => s.id !== this._blockSpecs[i]?.id);
+      if (orderChanged) {
+        for (const el of this._blocks.values()) el.remove();
+        this._blocks.clear();
+        for (const b of specs) {
+          const el = this._block(b.id, b.name, b.icon, b.cards);
+          el.cardsKey = JSON.stringify(b.cards);
+          this._blocks.set(b.id, el);
+          this._el.list.appendChild(el);
+        }
+      } else {
+        for (const b of specs) {
+          const el = this._blocks.get(b.id);
+          const cardsKey = JSON.stringify(b.cards);
+          if (el.cardsKey === cardsKey) continue;
+          el.cardsKey = cardsKey;
+          const body = el.querySelector(".body");
+          body.replaceChildren();
+          el.cards = [];
+          this._fill(this._rendering, body, el.cards, b.cards);
+        }
       }
-      return found.sort((a, b) => Number(a) - Number(b));
+      this._blockSpecs = specs;
+      this._arrange();
     }
 
     // ---- Rendering ---------------------------------------------------------
@@ -384,16 +413,15 @@
                 <div class="text"><div class="name"></div><div class="state"></div></div>
                 <div class="reading" hidden><span class="value"></span><span class="unit">kW</span></div>
               </div>
+              <div class="warning" hidden>
+                <ha-icon icon="mdi:clock-alert-outline"></ha-icon>
+                <span>Charger clock not synced — Timer charging is paused until NTP sync completes.</span>
+              </div>
               <div class="rows">
-                <div class="row allow">
+                <div class="row mode">
                   <ha-icon icon="mdi:power-plug-battery"></ha-icon>
-                  <div class="text"><div class="label">Allow charging</div><div class="hint"></div></div>
-                  <ha-switch></ha-switch>
-                </div>
-                <div class="row timed">
-                  <ha-icon icon="mdi:timer-outline"></ha-icon>
-                  <div class="text"><div class="label">Only during timers</div><div class="hint"></div></div>
-                  <ha-switch></ha-switch>
+                  <div class="text"><div class="label">Charge mode</div><div class="hint"></div></div>
+                  <div class="modes" role="group" aria-label="Charge mode"></div>
                 </div>
               </div>
               <div class="day" hidden>
@@ -401,7 +429,6 @@
                 <div class="hours"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>24:00</span></div>
               </div>
             </ha-card>
-            <div class="new"><div class="note" hidden></div><div class="add" hidden></div></div>
           </div>
         </div>`;
       const $ = (sel) => this._root.querySelector(sel);
@@ -409,46 +436,38 @@
       const head = $(".card-head");
       head.title = `Show or hide the ${TITLE.toLowerCase()}`;
       onActivate(head, () => this._toggleCollapsed(ALL));
-      // The charger's own dialog, with its history.
       const top = $(".top");
       top.title = "Show the charger's history";
-      onActivate(top, () => this._moreInfo(this._entities.state));
-      // The toggles switch EO-Lite's switches, which set the charger.
-      for (const [row, key] of [[".allow", "allow_charging"], [".timed", "only_during_timers"]]) {
-        const toggle = $(`${row} ha-switch`);
-        toggle.addEventListener("change", () => this._switch(this._entities[key], toggle.checked));
+      onActivate(top, () => this._moreInfo(this._entities.charger_state));
+
+      const modes = $(".modes");
+      const modeButtons = {};
+      for (const option of MODES) {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.textContent = option;
+        btn.dataset.mode = option;
+        btn.addEventListener("click", () => this._selectMode(option));
+        modes.appendChild(btn);
+        modeButtons[option] = btn;
       }
+
       this._el = {
-        status: $(".status"), icon: $(".top ha-icon"), name: $(".top .name"), state: $(".top .state"), reading: $(".reading"), value: $(".reading .value"),
-        allow: $(".allow"), allowHint: $(".allow .hint"), allowSwitch: $(".allow ha-switch"),
-        timed: $(".timed"), timedHint: $(".timed .hint"), timedSwitch: $(".timed ha-switch"),
-        day: $(".day"), track: $(".track"), list: $(".blocks"), after: $(".new"), note: $(".note"), add: $(".add"),
+        status: $(".status"), icon: $(".top ha-icon"), name: $(".top .name"), state: $(".top .state"),
+        reading: $(".reading"), value: $(".reading .value"), warning: $(".warning"),
+        modeRow: $(".row.mode"), modeHint: $(".row.mode .hint"), modeButtons,
+        day: $(".day"), track: $(".track"), list: $(".blocks"),
       };
-      const render = (this._rendering = {});
-      for (const b of this._config.more || []) {
-        const el = this._block(b.id, b.name, b.icon, b.cards);
-        this._blocks.set(b.id, el);
-        this._el.list.appendChild(el);
-      }
-      // New timer: there from the start, shown while the charger's answering.
-      this._fill(render, this._el.add, this._addCards, [{
-        type: "entities",
-        entities: [{
-          type: "button",
-          name: "New timer",
-          icon: "mdi:timer-plus-outline",
-          action_name: "Add",
-          tap_action: { action: "perform-action", perform_action: "button.press", target: { entity_id: this._entities.add_timer } },
-        }],
-      }]);
-      this._arrange();
+      this._rendering = {};
+      this._blocks.clear();
+      this._blockSpecs = [];
+      this._syncBlocks();
     }
 
-    _switch(entityId, on) {
+    _selectMode(option) {
+      const entityId = this._entities.charge_mode;
       if (!entityId) return;
-      // Refused (by someone who may not control the charger, say): the
-      // switch goes back to showing the toggle as it is.
-      this._hass.callService("switch", on ? "turn_on" : "turn_off", {}, { entity_id: entityId })
+      this._hass.callService("select", "select_option", { option }, { entity_id: entityId })
         .catch(() => { this._seen = null; this._update(); });
     }
 
@@ -456,8 +475,6 @@
       if (entityId) this.dispatchEvent(new CustomEvent("hass-more-info", { detail: { entityId }, bubbles: true, composed: true }));
     }
 
-    // A block: a heading (chevron, icon, name and summary; tapping it opens
-    // or closes the block) above its cards.
     _block(id, name, icon, cards) {
       const el = document.createElement("div");
       el.className = "block";
@@ -477,47 +494,6 @@
       return el;
     }
 
-    // A timer's settings: its times and current, and deleting it (`deletable`:
-    // `alone` when it's the only one, which the charger puts back to its
-    // default rather than deleting).
-    _timerCard(n, deletable) {
-      const ids = this._ids(n);
-      const rows = [
-        { entity: ids.start, name: "From", icon: "mdi:clock-start" },
-        { entity: ids.end, name: "Until", icon: "mdi:clock-end" },
-        { entity: ids.current, name: "Charge current", icon: "mdi:current-ac" },
-      ];
-      if (deletable) {
-        rows.push({
-          type: "button",
-          name: "Delete this timer",
-          icon: "mdi:delete-outline",
-          action_name: "Delete",
-          tap_action: {
-            action: "perform-action",
-            perform_action: "button.press",
-            target: { entity_id: ids.remove },
-            confirmation: {
-              text: deletable === "alone"
-                ? `Timer ${n} is the only one, so the charger keeps it, back at ${this._defaultText()}. Reset it?`
-                : `Delete timer ${n}? The timers after it move up a number.`,
-            },
-          },
-        });
-      }
-      return { type: "entities", entities: rows };
-    }
-
-    _timerBlock(n, deletable) {
-      const el = this._block(`timer_${n}`, `Timer ${n}`, "mdi:timer-outline", [this._timerCard(n, deletable)]);
-      el.deletable = deletable;
-      el.ids = JSON.stringify(this._ids(n));
-      return el;
-    }
-
-    // Fills `into` with Home Assistant cards once its card helpers have
-    // loaded, unless the card has been rendered again in the meantime, or
-    // `into` has been filled again (only the latest fill counts).
     async _fill(render, into, cards, configs) {
       const fill = (into.fill = {});
       const helpers = await loadCardHelpers();
@@ -530,183 +506,171 @@
       }
     }
 
-    // Applies the folded state: the whole card's, then each block's.
     _arrange() {
       const collapsed = this._layout.collapsed;
       const folded = collapsed.includes(ALL);
       this._root.querySelector(".card").classList.toggle("folded", folded);
       this._root.querySelector(".card-head").setAttribute("aria-expanded", String(!folded));
-      for (const el of [...this._blocks.values(), ...this._timers.values()]) {
+      for (const el of this._blocks.values()) {
         const closed = collapsed.includes(el.dataset.id);
         el.classList.toggle("collapsed", closed);
         el.querySelector(".head").setAttribute("aria-expanded", String(!closed));
       }
     }
 
-    // Whether any state the card shows changed since it last looked. Home
-    // Assistant hands out a new hass on every state change in the house, but
-    // replaces a state object only when that entity changes, so comparing
-    // the objects is enough to skip redrawing for everything else. The time
-    // counts too, a minute at a time, for the strip's now.
-    _changed(numbers) {
-      const ids = [...Object.values(this._entities), ...numbers.flatMap((n) => Object.values(this._ids(n)))];
+    _changed() {
+      const ids = Object.values(this._entities);
       const states = [...ids.map((id) => this._hass.states[id]), Math.floor(Date.now() / 60000)];
       const changed = !this._seen || states.length !== this._seen.length || states.some((s, i) => s !== this._seen[i]);
       this._seen = states;
       return changed;
     }
 
+    _timer(n) {
+      const hass = this._hass;
+      const e = this._entities;
+      return {
+        n,
+        enabled: isOn(hass, e[`timer_${n}_enabled`]),
+        start: minutes(hass, e[`timer_${n}_start`]),
+        end: minutes(hass, e[`timer_${n}_end`]),
+      };
+    }
+
     _update() {
       const hass = this._hass;
       const e = this._entities;
-      const numbers = this._numbers();
-      if (!this._changed(numbers)) return;
-      const timers = numbers.map((n) => {
-        const ids = this._ids(n);
-        return { n, start: minutes(hass, ids.start), end: minutes(hass, ids.end), amps: number(hass, ids.current), unit: unitOf(hass, ids.current) || "A" };
-      });
-      this._updateTimers(timers);
+      if (!this._changed()) return;
+      const timers = [this._timer(1), this._timer(2)];
       this._updateStatus(timers);
 
-      // Each timer's times and current on its heading, and each block's summary.
       for (const t of timers) {
-        const amps = t.amps === null ? "–" : Math.round(t.amps * 10) / 10;
-        this._timers.get(t.n).querySelector(".summary").textContent = `${clockOf(t.start)}–${clockOf(t.end)} · ${amps} ${t.unit}`;
+        const block = this._blocks.get(`timer_${t.n}`);
+        if (!block) continue;
+        let summary;
+        if (t.enabled) {
+          summary = t.start !== null && t.end !== null && t.start === t.end
+            ? "On · Inactive"
+            : `On · ${clockOf(t.start)}–${clockOf(t.end)}`;
+        } else {
+          summary = t.start !== null && t.end !== null && t.start !== t.end
+            ? `Off · ${clockOf(t.start)}–${clockOf(t.end)}`
+            : "Off";
+        }
+        block.querySelector(".summary").textContent = summary;
       }
+
       const power = this._blocks.get("power");
       if (power) {
-        const cost = (number(hass, e.session_cost) ?? 0).toFixed(2);
-        const unit = unitOf(hass, e.session_cost);
-        const money = CURRENCIES[unit] ? `${CURRENCIES[unit]}${cost}` : `${cost} ${unit}`.trim();
-        power.querySelector(".summary").textContent = `This session: ${(number(hass, e.session_kwh) ?? 0).toFixed(2)} kWh · ${money}`;
+        const session = (number(hass, e.session_energy) ?? 0).toFixed(2);
+        const total = (number(hass, e.energy_total) ?? 0).toFixed(1);
+        power.querySelector(".summary").textContent = `This session: ${session} kWh · Total: ${total} kWh`;
       }
 
-      // After the timers: New timer while the charger's answering.
-      const answers = stateOf(hass, e.add_timer) !== undefined && stateOf(hass, e.add_timer) !== "unavailable";
-      this._el.note.textContent = answers ? "" : "The charger isn't answering, so timers can't be added.";
-      this._el.note.hidden = answers;
-      this._el.add.hidden = !answers;
-    }
-
-    // The timer openeo adds, and leaves when the last one's deleted.
-    get _default() {
-      const d = this._live?.default_timer || { start: "22:00", end: "06:00", amps: 16 };
-      const mins = (hhmm) => Number(hhmm.slice(0, 2)) * 60 + Number(hhmm.slice(3, 5));
-      return { start: mins(d.start), end: mins(d.end), amps: d.amps };
-    }
-
-    _defaultText() {
-      const d = this._default;
-      return `${clockOf(d.start)}–${clockOf(d.end)} at ${d.amps} A`;
-    }
-
-    // Whether a timer can be deleted: while there are others, and the only
-    // one too unless it's just the charger's default (deleting it would
-    // change nothing).
-    _deletable(t, timers) {
-      if (timers.length > 1) return true;
-      const d = this._default;
-      return t.start === d.start && t.end === d.end && t.amps === d.amps ? false : "alone";
-    }
-
-    // A block for each timer. Ones still there stay as they are, so a timer
-    // that's being edited isn't disturbed.
-    _updateTimers(timers) {
-      const numbers = timers.map((t) => t.n);
-      let forgot = false;
-      for (const [n, el] of this._timers) {
-        if (numbers.includes(n)) continue;
-        el.remove();
-        this._timers.delete(n);
-        // Gone, so a timer that takes its number later starts open.
-        if (this._layout.collapsed.includes(el.dataset.id)) {
-          this._layout.collapsed = this._layout.collapsed.filter((id) => id !== el.dataset.id);
-          forgot = true;
+      const diag = this._blocks.get("diagnostics");
+      if (diag) {
+        let summary;
+        if (stateOf(hass, e.controller_connected) === "off") {
+          summary = "Controller offline";
+        } else {
+          const parts = [];
+          const chargerState = stateOf(hass, e.charger_state);
+          if (chargerState && chargerState !== "unavailable" && chargerState !== "unknown") parts.push(chargerState);
+          const cpu = number(hass, e.cpu_temperature);
+          if (cpu !== null) parts.push(`${Math.round(cpu)} °C`);
+          const rssi = number(hass, e.wifi_rssi);
+          if (rssi !== null) parts.push(`${Math.round(rssi)} dBm`);
+          summary = parts.length ? parts.join(" · ") : "–";
         }
+        diag.querySelector(".summary").textContent = summary;
       }
-      if (forgot && this._layoutLoaded) saveLayout(this._hass, this._layoutKey, this._layout);
-      for (const t of timers) {
-        const n = t.n;
-        if (this._timers.has(n)) continue;
-        const el = this._timerBlock(n, this._deletable(t, timers));
-        this._timers.set(n, el);
-        const next = numbers.find((m) => Number(m) > Number(n) && this._timers.has(m));
-        this._el.list.insertBefore(el, next ? this._timers.get(next) : this._el.after);
-      }
-      // A timer's card is made again when whether it can be deleted changes,
-      // or its entities do (renamed, or still arriving one by one).
-      for (const t of timers) {
-        const el = this._timers.get(t.n);
-        const deletable = this._deletable(t, timers);
-        const ids = JSON.stringify(this._ids(t.n));
-        if (el.deletable === deletable && el.ids === ids) continue;
-        el.deletable = deletable;
-        el.ids = ids;
-        const body = el.querySelector(".body");
-        body.replaceChildren();
-        el.cards = [];
-        this._fill(this._rendering, body, el.cards, [this._timerCard(t.n, deletable)]);
-      }
-      this._arrange();
     }
 
-    // The status card: what the charger's doing, the toggles, and the strip.
     _updateStatus(timers) {
       const hass = this._hass;
       const e = this._entities;
       const el = this._el;
       const now = new Date();
       const nowMins = now.getHours() * 60 + now.getMinutes();
-      const known = answering(hass, e.allow_charging);
-      const allow = isOn(hass, e.allow_charging);
-      const timed = allow && isOn(hass, e.only_during_timers);
-      const reachable = ![e.state, e.charging_active].every((id) => [undefined, "unavailable"].includes(stateOf(hass, id)));
-      const charging = isOn(hass, e.charging_active);
-      const plugged = isOn(hass, e.vehicle_connected);
-      const windows = timers.filter((t) => t.start !== null && t.end !== null).map((t) => `${clockOf(t.start)}–${clockOf(t.end)}`);
 
-      // What it's doing, then a line saying more.
+      const mode = stateOf(hass, e.charge_mode);
+      const knownMode = MODES.includes(mode);
+      const chargerState = stateOf(hass, e.charger_state);
+      const controllerOff = stateOf(hass, e.controller_connected) === "off";
+      const missing = [e.charger_state, e.charging_active].every((id) => [undefined, "unavailable"].includes(stateOf(hass, id)));
+      const offline = controllerOff || missing;
+      const fault = !offline && (isOn(hass, e.mains_fault) || ["mains-fault", "mains-fault-start"].includes(chargerState));
+      const charging = !offline && !fault && isOn(hass, e.charging_active);
+      const plugged = !offline && !fault && isOn(hass, e.vehicle_connected);
+      const cable = !offline && !fault && isOn(hass, e.cable_connected);
+      const clockOff = stateOf(hass, e.clock_synced) === "off";
+
       let look;
       let name;
       let line;
-      if (!reachable) {
+      if (controllerOff) {
+        [look, name, line] = ["away", "Not answering", "RS-485 link to power board lost"];
+      } else if (missing) {
         [look, name, line] = ["away", "Not answering", "Home Assistant can't reach the charger"];
+      } else if (fault) {
+        [look, name, line] = ["fault", "Mains fault", "Charging halted — check incoming mains"];
       } else if (charging) {
-        [look, name, line] = ["charging", "Charging", `${(number(hass, e.vehicle_current) ?? 0).toFixed(1)} A · ${(number(hass, e.session_kwh) ?? 0).toFixed(2)} kWh so far`];
+        [look, name, line] = ["charging", "Charging", `${(number(hass, e.current) ?? 0).toFixed(1)} A · ${(number(hass, e.session_energy) ?? 0).toFixed(2)} kWh so far`];
       } else if (plugged) {
-        const next = nextStart(timers, nowMins);
-        line = !allow ? "Charging is off"
-          : timed && next !== null ? `Charges from ${clockOf(next)}` : "Not charging";
         [look, name] = ["waiting", "Plugged in"];
+        if (mode === "Off") {
+          line = "Charging is off";
+        } else if (mode === "Timer") {
+          const next = nextStart(timers, nowMins);
+          line = clockOff ? "Waiting for clock sync" : next !== null ? `Charges from ${clockOf(next)}` : "No timers enabled";
+        } else if (["charge-complete", "charge-complete-start"].includes(chargerState)) {
+          line = "Charge complete";
+        } else if (chargerState === "charge-paused") {
+          line = "Charging paused";
+        } else if (["charge-suspended", "charge-suspended-start"].includes(chargerState)) {
+          line = "Charging suspended";
+        } else {
+          line = "Not charging";
+        }
+      } else if (cable) {
+        [look, name, line] = ["waiting", "Cable connected", "No vehicle connected"];
       } else {
         [look, name, line] = ["idle", "Ready", "No car plugged in"];
       }
+
       const { rgb, icon } = LOOKS[look];
-      el.status.className = `status ${look}${rgb ? " lit" : ""}${reachable ? "" : " unavailable"}`;
+      el.status.className = `status ${look}${rgb ? " lit" : ""}${offline ? " unavailable" : ""}`;
       if (rgb) el.status.style.setProperty("--look-rgb", rgb);
+      else el.status.style.removeProperty("--look-rgb");
       el.icon.setAttribute("icon", icon);
       el.name.textContent = name;
       el.state.textContent = line;
       el.reading.hidden = !charging;
       el.value.textContent = kilowatts(hass, e.power).toFixed(1);
 
-      // The toggles, and what they mean.
-      el.allow.classList.toggle("on", allow);
-      el.allowSwitch.checked = allow;
-      el.allowSwitch.disabled = !hass.states[e.allow_charging];
-      el.allowHint.textContent = !known ? "Waiting for the charger"
-        : !allow ? "The car won't charge, timers included"
-          : timed ? "Only during the timers" : "Whenever the car's plugged in";
-      el.timed.hidden = !allow;
-      el.timed.classList.toggle("on", timed);
-      el.timedSwitch.checked = timed;
-      el.timedHint.textContent = windows.length ? windows.join(" · ") : "No timers";
+      el.warning.hidden = !(mode === "Timer" && clockOff);
 
-      // The day's timers, while they're what decides.
-      el.day.hidden = !timed || !windows.length;
-      el.day.classList.toggle("idle", !timed);
+      const activeTimers = timers.filter((t) => t.enabled && t.start !== null && t.end !== null && t.start !== t.end);
+      const windows = activeTimers.map((t) => `${clockOf(t.start)}–${clockOf(t.end)}`);
+
+      el.modeRow.classList.toggle("on", mode === "On" || mode === "Timer");
+      el.modeHint.textContent = !knownMode ? "Waiting for the charger"
+        : mode === "Off" ? "The car won't charge, timers included"
+          : mode === "On" ? "Whenever the car's plugged in"
+            : windows.length ? windows.join(" · ") : "No timers enabled";
+
+      const modeDisabled = !hass.states[e.charge_mode] || mode === "unavailable";
+      for (const option of MODES) {
+        const btn = el.modeButtons[option];
+        btn.classList.toggle("active", mode === option);
+        btn.setAttribute("aria-pressed", String(mode === option));
+        btn.disabled = modeDisabled;
+      }
+
+      el.day.hidden = mode !== "Timer" || !activeTimers.length;
+      el.day.classList.toggle("idle", mode !== "Timer");
       el.track.replaceChildren(
-        ...timers.flatMap(stretches).map(([from, to]) => {
+        ...activeTimers.flatMap(stretches).map(([from, to]) => {
           const span = document.createElement("div");
           span.className = "span";
           span.style.left = `${(from * 100).toFixed(2)}%`;
@@ -727,9 +691,6 @@
 
   // ---- Adding the dashboard ------------------------------------------------
 
-  const STRATEGY = "custom:eo-lite";
-
-  // The page's hass, once Home Assistant has it (or null after two minutes).
   async function pageHass() {
     for (let i = 0; i < 120; i++) {
       const hass = document.querySelector("home-assistant")?.hass;
@@ -739,16 +700,9 @@
     return null;
   }
 
-  // EO-Lite's Charger dashboard is added the first time an admin opens Home
-  // Assistant after setting EO-Lite up (unless its option's off), as
-  // Settings → Dashboards → Add would, at /charger; a dashboard of EO-Lite's
-  // already there is found instead. EO-Lite remembers, so it's only added
-  // once, and only by one browser.
   async function addDashboard() {
     const hass = await pageHass();
     if (!hass?.user.is_admin) return;
-    // A page opened while Home Assistant's starting can get here before
-    // EO-Lite's set up: keep asking for a while.
     let setup = null;
     for (let i = 0; i < 20 && !setup; i++) {
       setup = await hass.callWS({ type: `${DOMAIN}/config` }).catch(() => null);
@@ -771,8 +725,6 @@
       });
       await hass.callWS({ type: "lovelace/config/save", url_path: urlPath, config: { strategy: { type: STRATEGY } } });
     } catch (err) {
-      // Give the claim back, so the next admin page load tries again, and
-      // say why in Home Assistant's log.
       const error = String(err?.message || err?.code || err).slice(0, 300);
       hass.callWS({ type: `${DOMAIN}/claim_dashboard`, release: true, error }).catch(() => {});
     }
@@ -783,12 +735,6 @@
     addDashboard();
   }
 
-  // ---- A dashboard opened before this script arrived ------------------------
-
-  // Home Assistant waits 5 seconds for a dashboard's strategy, then shows
-  // "Timeout waiting for strategy element" and doesn't try again (on a slow
-  // connection, or with a page opened while Home Assistant was starting).
-  // Once this script's here, ask a Charger dashboard showing that to load again.
   function retryTimedOut() {
     const main = document.querySelector("home-assistant")?.shadowRoot?.querySelector("home-assistant-main");
     const panel = main?.shadowRoot?.querySelector("ha-panel-lovelace");
